@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Novation firmware and locally generated images must never be committed.
+*.syx
+*.bin
+*.circuitpack
+build/
+
+# Local editor/OS files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

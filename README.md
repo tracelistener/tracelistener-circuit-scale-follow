@@ -1,0 +1,103 @@
+# Circuit Scale Follow
+
+Scale-quantized drum sample pitching for the **original Novation Circuit**.
+
+Circuit Scale Follow changes each Drum Pitch control into a four-octave musical range. The selected master root and scale determine the available notes, so drum samples can be played melodically without hunting for semitones.
+
+## Compatibility
+
+- Original Novation Circuit only
+- Firmware **1.8, build 3592** only
+- Not compatible with Circuit Tracks, Circuit Rhythm, or Circuit Mono Station
+- Hardware-tested on one original Circuit; additional test reports are welcome
+
+The patcher refuses any input whose SHA-256 does not exactly match the verified stock 3592 update. This is deliberate: do not bypass the check.
+
+## What it does
+
+- Scale Follow is on by default after every boot.
+- Hold **Shift** and press **Scales** to toggle it on or off.
+- Drum Pitch covers two scale octaves below to two scale octaves above the tonic.
+- The center value, MIDI CC 73 value 64, treats the loaded sample's original pitch as **C**.
+- Changing the master root or scale immediately changes the pitch mapping.
+- All four drum tracks work in live control, automation, session load, and pattern reload paths.
+- When Scale Follow is off, Drum Pitch is bit-for-bit stock behavior.
+
+The modification changes firmware behavior only. It does not contain or replace samples, sessions, packs, or factory patterns.
+
+## Build it
+
+Requirements: Python 3.10 or newer and a legitimate copy of the original Circuit 1.8 build 3592 firmware update SysEx.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python tools\build_circuit_scale_follow.py circuit-firmware-3592.syx
+python tools\verify_circuit_scale_follow.py
+```
+
+macOS/Linux activation and commands:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python tools/build_circuit_scale_follow.py circuit-firmware-3592.syx
+python tools/verify_circuit_scale_follow.py
+```
+
+The accepted stock SysEx SHA-256 is:
+
+```text
+260a72ebd10208aae44f7c01ad18a79cf1d7ad32658ecd1dee0d5215c0e6b7c0
+```
+
+Successful builds are written under `build/circuit-scale-follow/`. The important files are:
+
+- `circuit-3592-scale-follow.syx` — firmware update containing the mod
+- `circuit-3592-stock-recovery.syx` — untouched recovery copy of your input
+- `circuit-3592-scale-follow-manifest.json` — exact patch sites and checksums
+
+For release 0.1.0, the deterministic patched SysEx SHA-256 is:
+
+```text
+af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef
+```
+
+## Verify it
+
+The builder first checks the exact stock image, code-cave signatures, all changed-byte boundaries, MIDI-safe payload encoding, and all 24,576 combinations of 16 scales × 12 roots × 128 input values.
+
+The separate verifier emulates the inserted Thumb code and its integration hooks. It covers cold boot, toggle state, all four live callbacks, all four reload paths, root and scale commits, refresh scheduling, and stock behavior while disabled.
+
+## Install it
+
+Custom firmware always carries risk. Back up your Circuit pack with Novation Components first, use reliable power, and never disconnect power or MIDI during transfer.
+
+The included sender is dry-run by default and requires the exact file hash before it will transmit anything:
+
+```powershell
+python tools\send_circuit_firmware.py --list
+python tools\send_circuit_firmware.py build\circuit-scale-follow\circuit-3592-scale-follow.syx --port "YOUR MIDI PORT" --send --confirm-hash af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef --interval-ms 22 --no-monitor
+```
+
+To enter the original Circuit bootloader, turn the unit off, then hold **Scales + Note + Velocity** while powering on. Novation documents the same recovery procedure in its [official firmware-update support article](https://support.novationmusic.com/hc/en-gb/articles/360002211360-Updating-firmware-using-Novation-Components).
+
+If anything goes wrong, keep the Circuit powered and send the generated `circuit-3592-stock-recovery.syx`, or reinstall stock firmware through Novation's official updater. Do not experiment with partial message ranges unless you are actively developing and understand the recovery process.
+
+## Technical notes
+
+The patch keeps the stored 0–127 Drum Pitch value and automation data untouched. It remaps the value only when firmware reads it for the DSP. Small hooks cover both the live parameter callbacks and pattern/session reload getters. Two unused alignment bytes beside the stock parameter map hold the mode, selected scale, initialization flag, and root; stock callback pointers are not replaced.
+
+The reference pitch is C because the Circuit does not store per-sample root-note metadata. Tune the source sample to C for predictable melodic results.
+
+## Legal
+
+No Novation firmware is included in this repository. The MIT license covers only the original patcher, verification tools, and documentation in this project. Novation and Circuit are trademarks of their respective owner. This is an independent community project and is not affiliated with or endorsed by Novation.
+
+See [NOTICE.md](NOTICE.md) for details.
+
+## Credits
+
+Created and hardware-tested by [tracelistener](https://github.com/tracelistener), with reverse-engineering and implementation assistance from OpenAI Codex.
