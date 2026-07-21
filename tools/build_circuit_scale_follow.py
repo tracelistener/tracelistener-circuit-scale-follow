@@ -34,7 +34,7 @@ from circuit_scale_follow import SCALE_INTERVALS, self_test as mapping_self_test
 
 BASE = 0x08008000
 IMAGE_SIZE = 0x2EB80
-RELEASE_VERSION = "0.1.0"
+RELEASE_VERSION = "0.2.0"
 STOCK_IMAGE_SHA256 = "1a424d4f116c9b76c3e4e9c1cfa1abb3e262f7d120529c23992e7ee047e1f1ee"
 STOCK_SYSEX_SHA256 = "260a72ebd10208aae44f7c01ad18a79cf1d7ad32658ecd1dee0d5215c0e6b7c0"
 
@@ -86,6 +86,16 @@ class PatchSite:
     stock: bytes
     assembly: str
     purpose: str
+
+
+@dataclass(frozen=True)
+class BuildArtifacts:
+    patched_image: Path
+    stock_image: Path
+    patched_sysex: Path
+    stock_recovery_sysex: Path
+    manifest: Path
+    verification: dict
 
 
 PATCH_SITES = (
@@ -648,17 +658,10 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("stock_sysex", type=Path)
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=Path("build") / "circuit-scale-follow",
-    )
-    args = parser.parse_args()
+def build_from_sysex(stock_sysex: Path, output_dir: Path) -> BuildArtifacts:
+    """Validate stock 3592, build the mod, and write a complete recovery set."""
 
-    stock, messages, original_sysex = load(args.stock_sysex)
+    stock, messages, original_sysex = load(stock_sysex)
     if sha256(original_sysex) != STOCK_SYSEX_SHA256:
         raise ValueError("input SysEx hash does not match verified firmware 3592")
 
@@ -670,24 +673,45 @@ def main() -> None:
     verification = verify_build(stock, patched, rebuilt_sysex, manifest)
     manifest["verification"] = verification
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    image_path = args.output_dir / "circuit-3592-scale-follow.bin"
-    stock_image_path = args.output_dir / "circuit-3592-stock.bin"
-    sysex_path = args.output_dir / "circuit-3592-scale-follow.syx"
-    recovery_path = args.output_dir / "circuit-3592-stock-recovery.syx"
-    manifest_path = args.output_dir / "circuit-3592-scale-follow-manifest.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    image_path = output_dir / "circuit-3592-scale-follow.bin"
+    stock_image_path = output_dir / "circuit-3592-stock.bin"
+    sysex_path = output_dir / "circuit-3592-scale-follow.syx"
+    recovery_path = output_dir / "circuit-3592-stock-recovery.syx"
+    manifest_path = output_dir / "circuit-3592-scale-follow-manifest.json"
     image_path.write_bytes(patched)
     stock_image_path.write_bytes(stock)
     sysex_path.write_bytes(rebuilt_sysex)
     recovery_path.write_bytes(original_sysex)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    print(f"patched image: {image_path}")
-    print(f"decoded stock image: {stock_image_path}")
-    print(f"patched SysEx: {sysex_path}")
-    print(f"stock recovery SysEx: {recovery_path}")
-    print(f"manifest: {manifest_path}")
-    print(json.dumps(verification, indent=2))
+    return BuildArtifacts(
+        patched_image=image_path,
+        stock_image=stock_image_path,
+        patched_sysex=sysex_path,
+        stock_recovery_sysex=recovery_path,
+        manifest=manifest_path,
+        verification=verification,
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("stock_sysex", type=Path)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("build") / "circuit-scale-follow",
+    )
+    args = parser.parse_args()
+
+    artifacts = build_from_sysex(args.stock_sysex, args.output_dir)
+    print(f"patched image: {artifacts.patched_image}")
+    print(f"decoded stock image: {artifacts.stock_image}")
+    print(f"patched SysEx: {artifacts.patched_sysex}")
+    print(f"stock recovery SysEx: {artifacts.stock_recovery_sysex}")
+    print(f"manifest: {artifacts.manifest}")
+    print(json.dumps(artifacts.verification, indent=2))
 
 
 if __name__ == "__main__":

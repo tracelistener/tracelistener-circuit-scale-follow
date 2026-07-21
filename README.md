@@ -13,10 +13,19 @@ Circuit Scale Follow changes each Drum Pitch control into a four-octave musical 
 
 The patcher refuses any input whose SHA-256 does not exactly match the verified stock 3592 update. This is deliberate: do not bypass the check.
 
+## Easiest installation on Windows
+
+Download the latest `CircuitScaleFollowTool` package from [GitHub Releases](https://github.com/tracelistener/tracelistener-circuit-scale-follow/releases/latest). It is a self-contained graphical builder and guarded MIDI uploader; Python is not required.
+
+The tool does **not** contain Novation firmware. Choose your legitimate stock `circuit-firmware-3592.syx`, click **Validate and Build Firmware**, put the original Circuit in bootloader mode, select the correct MIDI output, and click **Upload Verified Firmware**. A stock recovery copy is always created before upload is enabled.
+
+See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum instructions. Novation Components cannot import a custom firmware file; its local SysEx importer is for patches and banks. Use the included guarded uploader for this mod.
+
 ## What it does
 
 - Scale Follow is on by default after every boot.
 - Hold **Shift** and press **Scales** to toggle it on or off.
+- To choose the master root or scale, enter the normal **Scales** view and select it; the Scales button does not need to remain held.
 - Drum Pitch covers two scale octaves below to two scale octaves above the tonic.
 - The center value, MIDI CC 73 value 64, treats the loaded sample's original pitch as **C**.
 - Changing the master root or scale immediately changes the pitch mapping.
@@ -59,7 +68,7 @@ Successful builds are written under `build/circuit-scale-follow/`. The important
 - `circuit-3592-stock-recovery.syx` — untouched recovery copy of your input
 - `circuit-3592-scale-follow-manifest.json` — exact patch sites and checksums
 
-For release 0.1.0, the deterministic patched SysEx SHA-256 is:
+For releases 0.1.0 and 0.2.0, the deterministic patched SysEx SHA-256 is:
 
 ```text
 af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef

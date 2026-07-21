@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-07-21
+
+- Add a self-contained Windows GUI for building and uploading the mod.
+- Require the exact verified stock 3592 SysEx before firmware can be generated.
+- Recheck the deterministic patched hash before enabling upload.
+- Always write a stock recovery copy beside the generated firmware.
+- Use a fixed conservative 22 ms transfer interval and a final confirmation naming the selected MIDI port.
+- Prevent the GUI from closing while a firmware transfer is active.
+- Add reproducible PyInstaller packaging and Windows usage documentation.
+
 ## 0.1.0 — 2026-07-21
 
 - Add scale-quantized Drum Pitch over a ±2-octave range.
