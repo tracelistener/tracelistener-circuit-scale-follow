@@ -1,4 +1,4 @@
-"""Build the opt-in Scale Follow modification for Circuit firmware 3592.
+"""Build Scale Follow plus Drum Distortion Select for Circuit firmware 3592.
 
 The patch is intentionally narrow:
 
@@ -14,6 +14,8 @@ The patch is intentionally narrow:
 * The live scale index, root, and mode bit use two verified alignment-padding
   bytes immediately after the stock 174-byte parameter map.  Stock pointer
   handling is not modified.
+* Shift + the normal Drum Distortion Macro selects one of all seven stock DSP
+  algorithms independently for each drum without moving the stored amount.
 
 No output from this script should be flashed until ``verify_build`` succeeds.
 """
@@ -34,9 +36,12 @@ from circuit_scale_follow import SCALE_INTERVALS, self_test as mapping_self_test
 
 BASE = 0x08008000
 IMAGE_SIZE = 0x2EB80
-RELEASE_VERSION = "0.2.0"
+RELEASE_VERSION = "0.3.0"
 STOCK_IMAGE_SHA256 = "1a424d4f116c9b76c3e4e9c1cfa1abb3e262f7d120529c23992e7ee047e1f1ee"
 STOCK_SYSEX_SHA256 = "260a72ebd10208aae44f7c01ad18a79cf1d7ad32658ecd1dee0d5215c0e6b7c0"
+SCALE_FOLLOW_IMAGE_SHA256 = "3030e159eb01d02872a40cc0416e79b6953bdabd1229c066a0ea41573087b603"
+PATCHED_IMAGE_SHA256 = "0198d2dd35853dbfeb35d1aff64d96736f71f193f1e02701f79cea2054122a75"
+PATCHED_SYSEX_SHA256 = "33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0"
 
 PARAMETER_MAP = 0x20002D00
 PARAMETER_MAP_LENGTH = 0xAE
@@ -79,6 +84,40 @@ UI_SCALE_COMMIT = 0x0802D690
 UI_ROOT_COMMIT = 0x0802D694
 UI_COMMIT_COMMON = 0x0802D698
 
+# The stock DSP program begins after two three-byte transport framing words.
+# Its P:$0048 area is zero-filled and safe for the selector trampoline.  ARM
+# wrappers share the same flash stream beginning at P:$0070; the DSP never
+# executes them because its reset vector jumps to P:$0100.
+DSP_PROGRAM_DATA = 0x08025B6E + 6
+DSP_TRAMPOLINE_PC = 0x0048
+DSP_TRAMPOLINE_ADDRESS = DSP_PROGRAM_DATA + DSP_TRAMPOLINE_PC * 3
+DSP_CALL_PC = 0x2763
+DSP_CALL_ADDRESS = DSP_PROGRAM_DATA + DSP_CALL_PC * 3
+DSP_CALL_RESUME_PC = 0x2766
+DSP_STOCK_CALL_SEQUENCE = bytes.fromhex("20 00 1B 71 F4 00 5C 28 F6")
+
+DISTORTION_ARM_D1_ENTRY = DSP_PROGRAM_DATA + 0x0070 * 3
+DISTORTION_ARM_D2_ENTRY = DISTORTION_ARM_D1_ENTRY + 4
+DISTORTION_ARM_D3_ENTRY = DISTORTION_ARM_D2_ENTRY + 4
+DISTORTION_ARM_D4_ENTRY = DISTORTION_ARM_D3_ENTRY + 4
+DISTORTION_ARM_COMMON = DISTORTION_ARM_D4_ENTRY + 4
+DISTORTION_CAVE_END = 0x08025E74
+
+DSP_SETTER = 0x0801633C
+DSP_GETTER = 0x08016E64
+PARAMETER_CONTEXT_POINTER = 0x20002DB0
+DISTORTION_TYPE_REGISTERS = (0x8109, 0x810A, 0x810B, 0x810B)
+DISTORTION_AMOUNT_REGISTERS = (0x8101, 0x8102, 0x8103, 0x8104)
+DISTORTION_ALGORITHMS = (
+    "diode",
+    "valve",
+    "clipper",
+    "crossover",
+    "rectifier",
+    "bit reducer",
+    "rate reducer",
+)
+
 
 @dataclass(frozen=True)
 class PatchSite:
@@ -96,6 +135,22 @@ class BuildArtifacts:
     stock_recovery_sysex: Path
     manifest: Path
     verification: dict
+
+
+@dataclass(frozen=True)
+class DistortionHook:
+    address: int
+    stock: bytes
+    target: int
+    drum: int
+
+
+DISTORTION_HOOKS = (
+    DistortionHook(0x08018B46, bytes.fromhex("F4 F7 CD FE"), DISTORTION_ARM_D1_ENTRY, 1),
+    DistortionHook(0x0801A1A0, bytes.fromhex("F3 F7 A0 FB"), DISTORTION_ARM_D2_ENTRY, 2),
+    DistortionHook(0x08019F40, bytes.fromhex("F3 F7 D0 FC"), DISTORTION_ARM_D3_ENTRY, 3),
+    DistortionHook(0x08019EA8, bytes.fromhex("F3 F7 1C FD"), DISTORTION_ARM_D4_ENTRY, 4),
+)
 
 
 PATCH_SITES = (
@@ -541,6 +596,267 @@ def patch_bytes(image: bytearray, address: int, expected: bytes, replacement: by
     image[start : start + len(expected)] = replacement
 
 
+def dsp_bytes(words: list[int]) -> bytes:
+    if any(not 0 <= word <= 0xFFFFFF for word in words):
+        raise ValueError("DSP word outside the 24-bit range")
+    return b"".join(word.to_bytes(3, "big") for word in words)
+
+
+def build_distortion_dsp_trampoline() -> tuple[bytes, dict[str, int]]:
+    """Build the hardware-tested 56k DSP algorithm-selection trampoline."""
+
+    words: list[int] = []
+    labels: dict[str, int] = {}
+    fixups: list[tuple[int, str]] = []
+
+    def mark(name: str) -> None:
+        labels[name] = DSP_TRAMPOLINE_PC + len(words)
+
+    def emit(*values: int) -> None:
+        words.extend(values)
+
+    def branch(opcode: int, target: str) -> None:
+        emit(opcode, 0)
+        fixups.append((len(words) - 1, target))
+
+    # R2 identifies Drum 1..4 as $9f/$a9/$b3/$bd.  A is overwritten by the
+    # stock frame after the trampoline, so it is safe scratch space here.
+    emit(0x224E00)  # move r2,a
+    emit(0x0140C5, 0x00009F)  # cmp #>$9f,a
+    branch(0x0AF0AA, "load_d1")
+    emit(0x0140C5, 0x0000A9)
+    branch(0x0AF0AA, "load_d2")
+    emit(0x0140C5, 0x0000B3)
+    branch(0x0AF0AA, "load_d3")
+
+    # Drum 3 and 4 share proven-stable Y:$010B.  Drum 3 occupies bits 0..2;
+    # Drum 4 occupies bits 3..5.  Y:$010D was rejected after hardware testing
+    # showed that stock DSP code rewrites it through an indirect pointer.
+    mark("load_d4")
+    emit(0x5FF000, 0x00010B)  # move y:>$10b,b
+    emit(0x0603A0)  # rep #<$3
+    emit(0x20002B)  # lsr b
+    emit(0x01478E)  # and #<$7,b
+    branch(0x0AF080, "validate")
+    mark("load_d1")
+    emit(0x5FF000, 0x000109)
+    branch(0x0AF080, "validate")
+    mark("load_d2")
+    emit(0x5FF000, 0x00010A)
+    branch(0x0AF080, "validate")
+    mark("load_d3")
+    emit(0x5FF000, 0x00010B)
+    emit(0x01478E)  # and #<$7,b
+
+    # Invalid/reset memory falls back to stock diode distortion (type 0).
+    mark("validate")
+    emit(0x01468D)  # cmp #<$6,b
+    branch(0x0AF0AF, "selector_ready")
+    emit(0x20001B)  # clr b
+
+    mark("selector_ready")
+    emit(0x71F400, 0x5C28F6)  # restore stock N1 constant
+    emit(0x0AF080, DSP_CALL_RESUME_PC)
+
+    for index, target in fixups:
+        words[index] = labels[target]
+
+    return dsp_bytes(words), {"word_count": len(words), **labels}
+
+
+def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
+    """Build four tiny drum entries and the shared Shift/knob wrapper."""
+
+    entries: list[tuple[int, bytes, str]] = []
+    for index, address in enumerate(
+        (
+            DISTORTION_ARM_D1_ENTRY,
+            DISTORTION_ARM_D2_ENTRY,
+            DISTORTION_ARM_D3_ENTRY,
+            DISTORTION_ARM_D4_ENTRY,
+        )
+    ):
+        code = assemble(
+            f"""
+                movs r2, #{index}
+                b {DISTORTION_ARM_COMMON:#x}
+            """,
+            address,
+        )
+        if len(code) != 4:
+            raise ValueError(f"Drum {index + 1} selector entry is not four bytes")
+        entries.append((address, code, f"Drum {index + 1} distortion-selector entry"))
+
+    common = assemble(
+        f"""
+            push {{r1, r2, r3, r4, r5, r6, r7, lr}}
+            mov r5, r1
+            mov r6, r2
+            bl {STOCK_DRUM_CONTROL_GETTER:#x}
+            mov r7, r0
+
+            movs r0, #{SHIFT_LOGICAL_ID}
+            bl {STOCK_BUTTON_PRESSED:#x}
+            cmp r0, #0
+            beq.w normal_amount
+
+            movw r0, #0x8101
+            adds r0, r0, r6
+            bl {DSP_GETTER:#x}
+            lsrs r4, r0, #24
+
+            movw r0, #0x8109
+            cmp r6, #3
+            bne selector_index_ready
+            movs r6, #2
+        selector_index_ready:
+            adds r0, r0, r6
+        selector_address_ready:
+            mov r6, r0
+            bl {DSP_GETTER:#x}
+            lsrs r3, r0, #8
+            mov r0, r3
+            cmp r5, #0x12
+            bne check_drum_4_current
+            and r0, r0, #7
+            b current_type_extracted
+        check_drum_4_current:
+            cmp r5, #0x19
+            bne current_type_extracted
+            lsrs r0, r0, #3
+            and r0, r0, #7
+        current_type_extracted:
+            cmp r0, #6
+            bls current_type_valid
+            movs r0, #0
+        current_type_valid:
+            movs r2, #0
+            cmp r7, r4
+            beq restore_amount
+            blo select_previous
+            adds r0, #1
+            cmp r0, #7
+            bne type_selected
+            movs r0, #0
+            b type_selected
+        select_previous:
+            cbnz r0, decrement_type
+            movs r0, #7
+        decrement_type:
+            subs r0, #1
+        type_selected:
+            movs r2, #1
+            mov r7, r0
+
+        restore_amount:
+            ldr r0, ={PARAMETER_CONTEXT_POINTER:#x}
+            ldr r0, [r0]
+            ldr r0, [r0, #0x318]
+            ldr r1, [r0, #4]
+            add.w r1, r1, r5, lsl #3
+            ldrh r1, [r1]
+            ldr r0, [r0, #0x0c]
+            ldr r0, [r0]
+            strb r4, [r0, r1]
+
+            cmp r2, #0
+            beq return_old_amount
+            mov r0, r7
+            cmp r5, #0x12
+            bne check_drum_4_pack
+            bic r3, r3, #7
+            orrs r0, r3
+            b packed_type_ready
+        check_drum_4_pack:
+            cmp r5, #0x19
+            bne packed_type_ready
+            bic r3, r3, #0x38
+            orr.w r0, r3, r7, lsl #3
+        packed_type_ready:
+            lsl.w r0, r0, #8
+            mov r1, r6
+            bl {DSP_SETTER:#x}
+        return_old_amount:
+            mov r0, r4
+            b selector_return
+
+        normal_amount:
+            mov r0, r7
+        selector_return:
+            pop {{r1, r2, r3, r4, r5, r6, r7, pc}}
+        """,
+        DISTORTION_ARM_COMMON,
+    )
+    if DISTORTION_ARM_COMMON + len(common) > DISTORTION_CAVE_END:
+        raise ValueError("distortion selector ARM wrapper exceeds its verified cave")
+    return entries, common
+
+
+def distortion_allowed_offsets() -> set[int]:
+    entries, common = build_distortion_arm_code()
+    arm_end = DISTORTION_ARM_COMMON + len(common)
+    allowed = set(range(offset(DSP_TRAMPOLINE_ADDRESS), offset(arm_end)))
+    allowed.update(range(offset(DSP_CALL_ADDRESS), offset(DSP_CALL_ADDRESS) + 9))
+    for hook in DISTORTION_HOOKS:
+        allowed.update(range(offset(hook.address), offset(hook.address) + 4))
+    return allowed
+
+
+def apply_distortion_selector(image: bytearray) -> dict:
+    """Add the verified per-drum seven-algorithm distortion selector."""
+
+    if sha256(image) != SCALE_FOLLOW_IMAGE_SHA256:
+        raise ValueError("distortion selector base is not the verified Scale Follow image")
+
+    dsp_code, dsp_metadata = build_distortion_dsp_trampoline()
+    arm_entries, arm_common = build_distortion_arm_code()
+    arm_end = DISTORTION_ARM_COMMON + len(arm_common)
+    if any(image[offset(DSP_TRAMPOLINE_ADDRESS) : offset(arm_end)]):
+        raise ValueError("distortion selector cave is not stock-zero")
+
+    image[
+        offset(DSP_TRAMPOLINE_ADDRESS) : offset(DSP_TRAMPOLINE_ADDRESS) + len(dsp_code)
+    ] = dsp_code
+    for address, code, _purpose in arm_entries:
+        image[offset(address) : offset(address) + len(code)] = code
+    image[offset(DISTORTION_ARM_COMMON) : offset(DISTORTION_ARM_COMMON) + len(arm_common)] = arm_common
+
+    dsp_redirect = dsp_bytes([0x0AF080, DSP_TRAMPOLINE_PC, 0x000000])
+    patch_bytes(image, DSP_CALL_ADDRESS, DSP_STOCK_CALL_SEQUENCE, dsp_redirect)
+
+    hooks = []
+    for hook in DISTORTION_HOOKS:
+        replacement = assemble(f"bl {hook.target:#x}", hook.address)
+        patch_bytes(image, hook.address, hook.stock, replacement)
+        hooks.append(
+            {
+                "drum": hook.drum,
+                "address": f"{hook.address:#010x}",
+                "target": f"{hook.target:#010x}",
+                "stock": hook.stock.hex(" ").upper(),
+                "patched": replacement.hex(" ").upper(),
+            }
+        )
+
+    return {
+        "feature": "per-drum seven-algorithm distortion selector",
+        "gesture": "hold Shift and turn Macro 5/6; clockwise next, counter-clockwise previous",
+        "normal_macro_behavior": "unchanged",
+        "amount_storage": "restored directly before the stock DSP callback returns",
+        "algorithms": list(DISTORTION_ALGORITHMS),
+        "type_registers": [f"{value:#06x}" for value in DISTORTION_TYPE_REGISTERS],
+        "amount_registers": [f"{value:#06x}" for value in DISTORTION_AMOUNT_REGISTERS],
+        "dsp_trampoline_pc": f"0x{DSP_TRAMPOLINE_PC:04X}",
+        "dsp_trampoline_address": f"{DSP_TRAMPOLINE_ADDRESS:#010x}",
+        "dsp_trampoline_words": dsp_metadata["word_count"],
+        "arm_common_address": f"{DISTORTION_ARM_COMMON:#010x}",
+        "arm_common_length": len(arm_common),
+        "arm_end": f"{arm_end:#010x}",
+        "drum_3_4_storage": "packed fields in proven-stable DSP Y:$010B",
+        "hooks": hooks,
+    }
+
+
 def build_image(stock: bytes) -> tuple[bytes, dict]:
     if len(stock) != IMAGE_SIZE:
         raise ValueError(f"unexpected image size {len(stock):#x}")
@@ -593,8 +909,14 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
             }
         )
 
+    if sha256(image) != SCALE_FOLLOW_IMAGE_SHA256:
+        raise ValueError("Scale Follow stage does not match the hardware-tested release")
+    distortion = apply_distortion_selector(image)
+    if sha256(image) != PATCHED_IMAGE_SHA256:
+        raise ValueError("combined image does not match the hardware-tested release")
+
     manifest = {
-        "project": "Circuit Scale Follow",
+        "project": "Circuit Scale Follow + Drum Distortion Select",
         "release": RELEASE_VERSION,
         "target": "original Novation Circuit firmware 1.8 build 3592",
         "base": f"{BASE:#010x}",
@@ -622,6 +944,7 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
         ),
         "reference_pitch": "loaded sample at C when stock pitch is 64",
         "range": "two scale octaves below through two scale octaves above the master tonic",
+        "distortion_selector": distortion,
         "code_sections": sections,
         "patch_sites": sites,
     }
@@ -638,6 +961,7 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
     allowed = set(range(offset(CAVE_START), offset(CAVE_END)))
     for site in PATCH_SITES:
         allowed.update(range(offset(site.address), offset(site.address) + len(site.stock)))
+    allowed.update(distortion_allowed_offsets())
     unexpected = sorted(changed - allowed)
     if unexpected:
         raise ValueError(f"unexpected changed image offsets: {unexpected[:16]}")
@@ -647,6 +971,10 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
         raise ValueError("re-decoded output SysEx does not match the patched image")
     if any(any(byte & 0x80 for byte in message.payload) for message in messages):
         raise ValueError("output SysEx contains a non-MIDI-safe payload byte")
+    if sha256(patched) != PATCHED_IMAGE_SHA256:
+        raise ValueError("generated image hash does not match the hardware-tested release")
+    if sha256(sysex) != PATCHED_SYSEX_SHA256:
+        raise ValueError("generated SysEx hash does not match the hardware-tested release")
 
     return {
         "changed_image_bytes": len(changed),
@@ -655,6 +983,7 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
         "sysex_sha256": sha256(sysex),
         "patched_image_sha256": manifest["patched_image_sha256"],
         "mapping_tests": "passed for 16 scales x 12 roots x 128 CC values",
+        "distortion_selector": "four independent drums, seven DSP algorithms",
     }
 
 
@@ -674,11 +1003,11 @@ def build_from_sysex(stock_sysex: Path, output_dir: Path) -> BuildArtifacts:
     manifest["verification"] = verification
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    image_path = output_dir / "circuit-3592-scale-follow.bin"
+    image_path = output_dir / "circuit-3592-scale-follow-distortion-select.bin"
     stock_image_path = output_dir / "circuit-3592-stock.bin"
-    sysex_path = output_dir / "circuit-3592-scale-follow.syx"
+    sysex_path = output_dir / "circuit-3592-scale-follow-distortion-select.syx"
     recovery_path = output_dir / "circuit-3592-stock-recovery.syx"
-    manifest_path = output_dir / "circuit-3592-scale-follow-manifest.json"
+    manifest_path = output_dir / "circuit-3592-scale-follow-distortion-select-manifest.json"
     image_path.write_bytes(patched)
     stock_image_path.write_bytes(stock)
     sysex_path.write_bytes(rebuilt_sysex)

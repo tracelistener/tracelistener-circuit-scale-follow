@@ -1,4 +1,4 @@
-"""One-click Windows builder and guarded uploader for Circuit Scale Follow."""
+"""One-click builder/uploader for Scale Follow and Drum Distortion Select."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Callable
 import rtmidi
 
 from build_circuit_scale_follow import (
+    PATCHED_SYSEX_SHA256,
     RELEASE_VERSION,
     STOCK_SYSEX_SHA256,
     BuildArtifacts,
@@ -26,9 +27,6 @@ from send_circuit_firmware import find_port, validate_firmware
 
 
 APP_NAME = "Circuit Scale Follow Tool"
-PATCHED_SYSEX_SHA256 = (
-    "af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef"
-)
 TRANSFER_INTERVAL_SECONDS = 0.022
 
 
@@ -132,8 +130,8 @@ class CircuitToolApp:
         ttk.Label(
             outer,
             text=(
-                "Build and install the hardware-tested mod for the original "
-                "Circuit, firmware 1.8 build 3592."
+                "Build and install Scale Follow plus per-drum distortion selection "
+                "for the original Circuit, firmware 1.8 build 3592."
             ),
             wraplength=740,
         ).pack(anchor="w", pady=(2, 14))
@@ -326,7 +324,7 @@ class CircuitToolApp:
         else:
             firmware = self.built_release.artifacts.patched_sysex
             expected_hash = PATCHED_SYSEX_SHA256
-            firmware_label = "Scale Follow firmware"
+            firmware_label = "Scale Follow + Drum Distortion Select firmware"
         warning = (
             f"This will send the verified {firmware_label}:\n\n{firmware}\n\n"
             f"to MIDI output:\n\n{port}\n\n"

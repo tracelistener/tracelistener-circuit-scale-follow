@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Version = "0.2.0"
+$Version = "0.3.0"
 $RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ReleaseRoot = Join-Path $RepositoryRoot "release-build"
 $ApplicationOutput = Join-Path $ReleaseRoot "application"
