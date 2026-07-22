@@ -1,4 +1,4 @@
-"""One-click builder/uploader for Scale Follow and Drum Distortion Select."""
+"""One-click builder/uploader for Scale Follow, Distortion Select, and Sample Start."""
 
 from __future__ import annotations
 
@@ -324,7 +324,7 @@ class CircuitToolApp:
         else:
             firmware = self.built_release.artifacts.patched_sysex
             expected_hash = PATCHED_SYSEX_SHA256
-            firmware_label = "Scale Follow + Drum Distortion Select firmware"
+            firmware_label = "Scale Follow + Distortion Select + Sample Start firmware"
         warning = (
             f"This will send the verified {firmware_label}:\n\n{firmware}\n\n"
             f"to MIDI output:\n\n{port}\n\n"

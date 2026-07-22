@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-07-22
+
+- Add Shift + Macro 3/4 per-drum sample-start control.
+- Provide approximately 64 evenly spaced encoder positions across each sample.
+- Track relative encoder events independently so direction reversals remain smooth.
+- Preserve normal decay values and non-Shift Macro 3/4 behavior.
+- Recompute the proportional displacement when a different sample is selected.
+- Apply offsets only on new triggers so sounding voices are not moved abruptly.
+- Reach the sample beginning and final safe sample position with bounded descriptor arithmetic.
+- Hardware-validate the full sweep, normal decay, and independent Drum 1/2 state.
+- Extend deterministic build and emulation checks across first, consecutive, reversed, clamped, and sample-change events.
+
 ## 0.3.0 — 2026-07-22
 
 - Add Shift + Macro 5/6 selection of all seven stock DSP distortion algorithms.

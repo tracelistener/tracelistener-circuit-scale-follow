@@ -1,6 +1,6 @@
 # Windows one-click tool
 
-`CircuitScaleFollowTool.exe` builds and uploads Circuit Scale Follow plus Drum Distortion Select without requiring Python. It contains the patcher and MIDI sender, but **no Novation firmware**.
+`CircuitScaleFollowTool.exe` builds and uploads Circuit Scale Follow, Drum Distortion Select, and Drum Sample Start without requiring Python. It contains the patcher and MIDI sender, but **no Novation firmware**.
 
 ## Before starting
 
@@ -14,14 +14,14 @@
 
 Download these two files from the latest GitHub release:
 
-- `CircuitScaleFollowTool-v0.3.0-Windows-x64.zip`
-- `CircuitScaleFollowTool-v0.3.0-Windows-x64.zip.sha256.txt`
+- `CircuitScaleFollowTool-v0.4.0-Windows-x64.zip`
+- `CircuitScaleFollowTool-v0.4.0-Windows-x64.zip.sha256.txt`
 
 In PowerShell, verify the ZIP before extracting it:
 
 ```powershell
-Get-FileHash .\CircuitScaleFollowTool-v0.3.0-Windows-x64.zip -Algorithm SHA256
-Get-Content .\CircuitScaleFollowTool-v0.3.0-Windows-x64.zip.sha256.txt
+Get-FileHash .\CircuitScaleFollowTool-v0.4.0-Windows-x64.zip -Algorithm SHA256
+Get-Content .\CircuitScaleFollowTool-v0.4.0-Windows-x64.zip.sha256.txt
 ```
 
 The two hashes must match exactly. The executable is not commercially code-signed, so Windows may identify the publisher as unknown. The source and reproducible build script are included in this repository.
@@ -41,15 +41,15 @@ The tool accepts only this stock SysEx SHA-256:
 
 It creates:
 
-- `circuit-3592-scale-follow-distortion-select.syx` — the locally generated combined mod
+- `circuit-3592-scale-follow-distortion-sample-start.syx` — the locally generated combined mod
 - `circuit-3592-stock-recovery.syx` — untouched recovery firmware
-- `circuit-3592-scale-follow-distortion-select-manifest.json` — verification and patch metadata
+- `circuit-3592-scale-follow-distortion-sample-start-manifest.json` — verification and patch metadata
 - decoded `.bin` images for technical inspection
 
 The expected mod SHA-256 is:
 
 ```text
-33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0
+0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95
 ```
 
 Upload remains disabled unless that exact result is produced.
