@@ -406,13 +406,16 @@ class CircuitToolApp:
                 self.transfer_active = False
                 self.progress["value"] = 100
                 self.status_var.set(
-                    f"{event[1].capitalize()} transfer complete. Wait for the Circuit to restart."
+                    f"{event[1].capitalize()} transfer complete. Cold-power-cycle before testing."
                 )
                 self.build_button.configure(state="normal")
                 self._update_upload_state()
                 messagebox.showinfo(
                     APP_NAME,
-                    "Transfer complete. Wait for the Circuit to finish or restart before touching power or cables.",
+                    "Transfer complete. First let the Circuit finish or restart. Then turn it off, "
+                    "remove USB, MIDI, external power, and batteries (if fitted) for 10 seconds, "
+                    "and start normally. This one-time cold boot clears retained bootloader RAM "
+                    "so Scale Follow initializes on.",
                 )
             elif kind == "error":
                 was_transfer = self.transfer_active
