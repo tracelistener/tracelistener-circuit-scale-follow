@@ -1,8 +1,9 @@
-# Circuit Scale Follow
+# Circuit Scale Follow + Drum Distortion Select
 
-Scale-quantized drum sample pitching for the **original Novation Circuit**.
+Scale-quantized drum sample pitching and selectable drum distortion algorithms
+for the **original Novation Circuit**.
 
-Circuit Scale Follow changes each Drum Pitch control into a four-octave musical range. The selected master root and scale determine the available notes, so drum samples can be played melodically without hunting for semitones.
+Circuit Scale Follow changes each Drum Pitch control into a four-octave musical range. The selected master root and scale determine the available notes, so drum samples can be played melodically without hunting for semitones. Version 0.3.0 also exposes all seven distortion algorithms already present in the Circuit DSP.
 
 ## Compatibility
 
@@ -21,7 +22,7 @@ The tool does **not** contain Novation firmware. Choose your legitimate stock `c
 
 See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum instructions. Novation Components cannot import a custom firmware file; its local SysEx importer is for patches and banks. Use the included guarded uploader for this mod.
 
-## What it does
+## Scale Follow
 
 - Scale Follow is on by default after every boot.
 - Hold **Shift** and press **Scales** to toggle it on or off.
@@ -31,6 +32,18 @@ See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum
 - Changing the master root or scale immediately changes the pitch mapping.
 - All four drum tracks work in live control, automation, session load, and pattern reload paths.
 - When Scale Follow is off, Drum Pitch is bit-for-bit stock behavior.
+
+## Drum Distortion Select
+
+- On the active drum pair, hold **Shift** and turn the normal distortion Macro:
+  **Macro 5** selects the first drum and **Macro 6** selects the second.
+- Clockwise movement selects the next algorithm; counter-clockwise movement selects the previous one.
+- The seven algorithms are diode, valve, clipper, crossover, rectifier, bit reducer, and rate reducer.
+- Each of the four drums keeps an independent algorithm selection for the current power session.
+- Algorithm choices are runtime controls; they are not written into patterns, sessions, or packs and reset after reboot.
+- Turning Macro 5/6 without Shift retains the normal continuous distortion-amount behavior.
+- Selecting an algorithm does not move the stored distortion amount.
+- A small pop while changing algorithms on sounding audio is expected because the DSP switches waveshaping functions immediately.
 
 The modification changes firmware behavior only. It does not contain or replace samples, sessions, packs, or factory patterns.
 
@@ -64,19 +77,19 @@ The accepted stock SysEx SHA-256 is:
 
 Successful builds are written under `build/circuit-scale-follow/`. The important files are:
 
-- `circuit-3592-scale-follow.syx` — firmware update containing the mod
+- `circuit-3592-scale-follow-distortion-select.syx` — combined firmware update
 - `circuit-3592-stock-recovery.syx` — untouched recovery copy of your input
-- `circuit-3592-scale-follow-manifest.json` — exact patch sites and checksums
+- `circuit-3592-scale-follow-distortion-select-manifest.json` — exact patch sites and checksums
 
-For releases 0.1.0 and 0.2.0, the deterministic patched SysEx SHA-256 is:
+The deterministic combined version 0.3.0 SysEx SHA-256 is:
 
 ```text
-af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef
+33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0
 ```
 
 ## Verify it
 
-The builder first checks the exact stock image, code-cave signatures, all changed-byte boundaries, MIDI-safe payload encoding, and all 24,576 combinations of 16 scales × 12 roots × 128 input values.
+The builder first checks the exact stock image, ARM and DSP code-cave signatures, every changed-byte boundary, MIDI-safe payload encoding, and all 24,576 combinations of 16 scales × 12 roots × 128 input values.
 
 The separate verifier emulates the inserted Thumb code and its integration hooks. It covers cold boot, toggle state, all four live callbacks, all four reload paths, root and scale commits, refresh scheduling, and stock behavior while disabled.
 
@@ -88,7 +101,7 @@ The included sender is dry-run by default and requires the exact file hash befor
 
 ```powershell
 python tools\send_circuit_firmware.py --list
-python tools\send_circuit_firmware.py build\circuit-scale-follow\circuit-3592-scale-follow.syx --port "YOUR MIDI PORT" --send --confirm-hash af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef --interval-ms 22 --no-monitor
+python tools\send_circuit_firmware.py build\circuit-scale-follow\circuit-3592-scale-follow-distortion-select.syx --port "YOUR MIDI PORT" --send --confirm-hash 33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0 --interval-ms 22 --no-monitor
 ```
 
 To enter the original Circuit bootloader, turn the unit off, then hold **Scales + Note + Velocity** while powering on. Novation documents the same recovery procedure in its [official firmware-update support article](https://support.novationmusic.com/hc/en-gb/articles/360002211360-Updating-firmware-using-Novation-Components).
@@ -98,6 +111,8 @@ If anything goes wrong, keep the Circuit powered and send the generated `circuit
 ## Technical notes
 
 The patch keeps the stored 0–127 Drum Pitch value and automation data untouched. It remaps the value only when firmware reads it for the DSP. Small hooks cover both the live parameter callbacks and pattern/session reload getters. Two unused alignment bytes beside the stock parameter map hold the mode, selected scale, initialization flag, and root; stock callback pointers are not replaced.
+
+The distortion extension redirects the stock DSP distortion call through a compact 56k trampoline. Drum 1 and 2 selectors use stable DSP Y-memory words; Drum 3 and 4 occupy separate packed fields in the hardware-tested Y:$010B word. The ARM wrapper restores the original amount byte before returning, so Shift movement selects a type without changing distortion depth.
 
 The reference pitch is C because the Circuit does not store per-sample root-note metadata. Tune the source sample to C for predictable melodic results.
 

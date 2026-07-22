@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 — 2026-07-22
+
+- Add Shift + Macro 5/6 selection of all seven stock DSP distortion algorithms.
+- Keep independent algorithm state for all four drum parts.
+- Preserve normal Macro 5/6 distortion-amount behavior and restore the stored amount during selection gestures.
+- Pack Drum 3/4 selectors into the hardware-validated DSP Y:$010B word for stable operation.
+- Extend deterministic build checks across the added ARM wrappers, DSP trampoline, hooks, and changed-byte boundaries.
+- Hardware-validate forward and reverse selection, all four independent drum states, stable Drum 4 operation, normal amount control, and Scale Follow regression behavior.
+
 ## 0.2.0 — 2026-07-21
 
 - Add a self-contained Windows GUI for building and uploading the mod.

@@ -1,6 +1,6 @@
 # Windows one-click tool
 
-`CircuitScaleFollowTool.exe` builds and uploads Circuit Scale Follow without requiring Python. It contains the patcher and MIDI sender, but **no Novation firmware**.
+`CircuitScaleFollowTool.exe` builds and uploads Circuit Scale Follow plus Drum Distortion Select without requiring Python. It contains the patcher and MIDI sender, but **no Novation firmware**.
 
 ## Before starting
 
@@ -14,14 +14,14 @@
 
 Download these two files from the latest GitHub release:
 
-- `CircuitScaleFollowTool-v0.2.0-Windows-x64.zip`
-- `CircuitScaleFollowTool-v0.2.0-Windows-x64.zip.sha256.txt`
+- `CircuitScaleFollowTool-v0.3.0-Windows-x64.zip`
+- `CircuitScaleFollowTool-v0.3.0-Windows-x64.zip.sha256.txt`
 
 In PowerShell, verify the ZIP before extracting it:
 
 ```powershell
-Get-FileHash .\CircuitScaleFollowTool-v0.2.0-Windows-x64.zip -Algorithm SHA256
-Get-Content .\CircuitScaleFollowTool-v0.2.0-Windows-x64.zip.sha256.txt
+Get-FileHash .\CircuitScaleFollowTool-v0.3.0-Windows-x64.zip -Algorithm SHA256
+Get-Content .\CircuitScaleFollowTool-v0.3.0-Windows-x64.zip.sha256.txt
 ```
 
 The two hashes must match exactly. The executable is not commercially code-signed, so Windows may identify the publisher as unknown. The source and reproducible build script are included in this repository.
@@ -41,15 +41,15 @@ The tool accepts only this stock SysEx SHA-256:
 
 It creates:
 
-- `circuit-3592-scale-follow.syx` — the locally generated mod
+- `circuit-3592-scale-follow-distortion-select.syx` — the locally generated combined mod
 - `circuit-3592-stock-recovery.syx` — untouched recovery firmware
-- `circuit-3592-scale-follow-manifest.json` — verification and patch metadata
+- `circuit-3592-scale-follow-distortion-select-manifest.json` — verification and patch metadata
 - decoded `.bin` images for technical inspection
 
 The expected mod SHA-256 is:
 
 ```text
-af80b145fb5aa122eab4c7146b409c36a16bab19765b71369b9e9e6ee448d3ef
+33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0
 ```
 
 Upload remains disabled unless that exact result is produced.
@@ -65,6 +65,8 @@ Upload remains disabled unless that exact result is produced.
 7. Wait for the Circuit to finish or restart before disconnecting anything.
 
 Scale Follow is on after boot. Hold **Shift** and press **Scales** to toggle it. For ordinary root/scale selection, enter the normal **Scales** view and choose the new setting; Scales does not need to remain held.
+
+For distortion selection, use the active drum pair and hold **Shift** while turning its normal distortion Macro: Macro 5 controls the first drum and Macro 6 the second. Clockwise selects the next type and counter-clockwise the previous type. The seven types are diode, valve, clipper, crossover, rectifier, bit reducer, and rate reducer. Each drum keeps its own selection for the current power session; choices are not written into patterns or packs and reset after reboot. Without Shift, the Macros retain their normal distortion-amount behavior.
 
 ## Recovery
 

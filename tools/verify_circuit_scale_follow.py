@@ -1,4 +1,4 @@
-"""Static and emulated verification for the Circuit Scale Follow patch."""
+"""Verify the combined Circuit Scale Follow and Drum Distortion Select patch."""
 
 from __future__ import annotations
 
@@ -24,6 +24,12 @@ from unicorn.arm_const import (
 from build_circuit_scale_follow import (
     BASE,
     CODE_SECTIONS,
+    DISTORTION_ARM_COMMON,
+    DISTORTION_CAVE_END,
+    DISTORTION_HOOKS,
+    DSP_CALL_ADDRESS,
+    DSP_TRAMPOLINE_ADDRESS,
+    DSP_TRAMPOLINE_PC,
     EVENT_HOOK_ENTRY,
     IMAGE_SIZE,
     INITIALIZED_BIT,
@@ -35,6 +41,7 @@ from build_circuit_scale_follow import (
     PARAMETER_MAP,
     PARAMETER_MAP_LENGTH,
     PATCH_SITES,
+    PATCHED_IMAGE_SHA256,
     SCALE_MASK,
     SCALES_LOGICAL_ID,
     SHIFT_ARMED_BIT,
@@ -54,6 +61,10 @@ from build_circuit_scale_follow import (
     TOGGLE_SCALES_CASE,
     UPDATE_ROOT_ENTRY,
     UPDATE_SCALE,
+    assemble,
+    build_distortion_arm_code,
+    build_distortion_dsp_trampoline,
+    dsp_bytes,
     sha256,
 )
 from circuit_scale_follow import map_pitch
@@ -145,6 +156,48 @@ def enter_panel_event(emulator: "Emulator", logical_id: int) -> None:
     )
 
 
+def distortion_static_checks(patched: bytes, manifest: dict) -> dict:
+    dsp_code, dsp_metadata = build_distortion_dsp_trampoline()
+    start = DSP_TRAMPOLINE_ADDRESS - BASE
+    if patched[start : start + len(dsp_code)] != dsp_code:
+        raise ValueError("distortion DSP trampoline does not match the verified build")
+
+    entries, common = build_distortion_arm_code()
+    for address, code, purpose in entries:
+        start = address - BASE
+        if patched[start : start + len(code)] != code:
+            raise ValueError(f"{purpose} does not match the verified build")
+    common_start = DISTORTION_ARM_COMMON - BASE
+    if patched[common_start : common_start + len(common)] != common:
+        raise ValueError("shared distortion ARM wrapper does not match the verified build")
+    if DISTORTION_ARM_COMMON + len(common) > DISTORTION_CAVE_END:
+        raise ValueError("shared distortion ARM wrapper exceeds its verified cave")
+
+    redirect = dsp_bytes([0x0AF080, DSP_TRAMPOLINE_PC, 0x000000])
+    redirect_start = DSP_CALL_ADDRESS - BASE
+    if patched[redirect_start : redirect_start + len(redirect)] != redirect:
+        raise ValueError("stock DSP distortion call was not redirected correctly")
+
+    for hook in DISTORTION_HOOKS:
+        expected = assemble(f"bl {hook.target:#x}", hook.address)
+        start = hook.address - BASE
+        if patched[start : start + len(expected)] != expected:
+            raise ValueError(f"Drum {hook.drum} distortion hook is incorrect")
+
+    details = manifest.get("distortion_selector", {})
+    if details.get("dsp_trampoline_words") != dsp_metadata["word_count"]:
+        raise ValueError("manifest distortion trampoline length is incorrect")
+    if details.get("drum_3_4_storage") != "packed fields in proven-stable DSP Y:$010B":
+        raise ValueError("manifest does not declare the hardware-tested Drum 3/4 storage")
+
+    return {
+        "dsp_trampoline_words": dsp_metadata["word_count"],
+        "arm_wrapper_bytes": len(common),
+        "drum_hooks": len(DISTORTION_HOOKS),
+        "drum_3_4_state": "packed in DSP Y:$010B",
+    }
+
+
 def static_checks(stock: bytes, patched: bytes, manifest: dict) -> dict:
     if len(stock) != IMAGE_SIZE or len(patched) != IMAGE_SIZE:
         raise ValueError("unexpected image size")
@@ -152,6 +205,10 @@ def static_checks(stock: bytes, patched: bytes, manifest: dict) -> dict:
         raise ValueError("stock image hash mismatch")
     if sha256(patched) != manifest["patched_image_sha256"]:
         raise ValueError("patched image hash mismatch")
+    if sha256(patched) != PATCHED_IMAGE_SHA256:
+        raise ValueError("patched image is not the hardware-tested combined release")
+
+    distortion_results = distortion_static_checks(patched, manifest)
 
     disassembler = Cs(
         CS_ARCH_ARM,
@@ -263,6 +320,7 @@ def static_checks(stock: bytes, patched: bytes, manifest: dict) -> dict:
             "next_stock_global": "0x20002db0",
         },
         "stock_callback_tables": "unchanged",
+        "distortion_selector": distortion_results,
         "pitch_read_hooks": "four reload reads and four live callbacks redirected",
         "stock_drum_scheduler": (
             "verified parameter map, callback pointers, dirty dispatcher, and note-event consumer"
@@ -1348,14 +1406,14 @@ def main() -> None:
         type=Path,
         default=Path("build")
         / "circuit-scale-follow"
-        / "circuit-3592-scale-follow.bin",
+        / "circuit-3592-scale-follow-distortion-select.bin",
     )
     parser.add_argument(
         "--manifest",
         type=Path,
         default=Path("build")
         / "circuit-scale-follow"
-        / "circuit-3592-scale-follow-manifest.json",
+        / "circuit-3592-scale-follow-distortion-select-manifest.json",
     )
     args = parser.parse_args()
 
