@@ -1,4 +1,4 @@
-"""Verify the combined Circuit Scale Follow and Drum Distortion Select patch."""
+"""Verify Scale Follow, Drum Distortion Select, and Sample Start."""
 
 from __future__ import annotations
 
@@ -68,6 +68,15 @@ from build_circuit_scale_follow import (
     sha256,
 )
 from circuit_scale_follow import map_pitch
+from circuit_sample_start_patch import (
+    ARM_CAVE_START as SAMPLE_ARM_CAVE_START,
+    DECAY_CACHE_BASE,
+    DSP_GETTER as SAMPLE_DSP_GETTER,
+    DSP_SETTER as SAMPLE_DSP_SETTER,
+    OFFSET_DISPLACEMENT_BASE,
+    OFFSET_RAW_BASE,
+    PARAMETER_CONTEXT_POINTER as SAMPLE_PARAMETER_CONTEXT_POINTER,
+)
 
 
 FLASH_MAP_BASE = 0x08000000
@@ -80,6 +89,7 @@ STOCK_PARAMETER_OBJECT_CLOSE = 0x080145CE
 STOCK_SCALE_SELECTION_GET = 0x080105F4
 STOCK_MASTER_SCALE_ROOT_UPDATE = 0x0801C91C
 STOCK_DSP_SETTER = 0x0801633C
+STOCK_DSP_GETTER = 0x08016E64
 STOCK_DRUM_DIRTY_DISPATCH = 0x0800CE1C
 STOCK_DRUM_EVENT_HANDLER = 0x0801FF24
 STOCK_DRUM_NOTE_TRIGGER = 0x08016694
@@ -88,6 +98,16 @@ STOCK_DRUM_PARAMETER_DIRTY_MAP = 0x0802EC6C
 STOCK_UI_SCALE_HANDLER = 0x08010606
 STOCK_UI_ROOT_HANDLER = 0x08014F2C
 STOCK_UI_ROOT_DIRECT_HANDLER = 0x08014F68
+
+
+def without_sample_start_state(calls: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Remove the private X:$1E59..$1E64 state writes from stock comparisons."""
+
+    return [
+        call
+        for call in calls
+        if not OFFSET_RAW_BASE <= call[1] <= DECAY_CACHE_BASE + 3
+    ]
 LIVE_DRUM_PITCH_CALLBACKS = (
     (0x08018AFA, 0x00A0),
     (0x0801A154, 0x00AA),
@@ -342,6 +362,8 @@ class Emulator:
         self.drum_getter_calls: list[tuple[int, int]] = []
         self.pattern_getter_calls: list[tuple[int, int]] = []
         self.dsp_calls: list[tuple[int, int]] = []
+        self.dsp_getter_calls: list[int] = []
+        self.dsp_memory: dict[int, int] = {}
         self.drum_note_triggers: list[tuple[int, int]] = []
         self.scale_index_address = 0x20005040
         self.root_field_address = 0x20005060
@@ -374,12 +396,21 @@ class Emulator:
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
             return
         if address == STOCK_DSP_SETTER:
+            value = uc.reg_read(UC_ARM_REG_R0)
+            register = uc.reg_read(UC_ARM_REG_R1)
             self.dsp_calls.append(
                 (
-                    uc.reg_read(UC_ARM_REG_R0),
-                    uc.reg_read(UC_ARM_REG_R1),
+                    value,
+                    register,
                 )
             )
+            self.dsp_memory[register] = value
+            uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+            return
+        if address == STOCK_DSP_GETTER:
+            register = uc.reg_read(UC_ARM_REG_R0)
+            self.dsp_getter_calls.append(register)
+            uc.reg_write(UC_ARM_REG_R0, self.dsp_memory.get(register, 0))
             uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
             return
         if address == STOCK_DRUM_NOTE_TRIGGER:
@@ -1335,7 +1366,7 @@ def emulation_checks(stock: bytes, patched: bytes) -> dict:
             emulator.write_byte(STATE_SCALE_MODE, MODE_OFF_STATE)
             stock_emulator.run(callback, max_instructions=10000)
             emulator.run(callback, max_instructions=10000)
-            if emulator.dsp_calls != stock_emulator.dsp_calls:
+            if without_sample_start_state(emulator.dsp_calls) != stock_emulator.dsp_calls:
                 raise ValueError(
                     f"mode-off live callback regression at {callback:#010x}, "
                     f"CC={value}: stock={stock_emulator.dsp_calls}, "
@@ -1392,6 +1423,176 @@ def emulation_checks(stock: bytes, patched: bytes) -> dict:
     }
 
 
+class SampleControlEmulator:
+    """Focused emulator for the Shift+Decay sample-start wrapper."""
+
+    def __init__(self, image: bytes, *, raw_value: int, shift: bool):
+        self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+        self.uc.mem_map(FLASH_MAP_BASE, FLASH_MAP_SIZE)
+        self.uc.mem_write(BASE, image)
+        self.uc.mem_map(RAM_BASE, RAM_SIZE)
+        self.raw_value = raw_value
+        self.shift = shift
+        self.dsp: dict[int, int] = {}
+        self.setter_calls: list[tuple[int, int]] = []
+        self.uc.hook_add(UC_HOOK_CODE, self._hook)
+        self._setup_parameter_context()
+
+    def _write_word(self, address: int, value: int) -> None:
+        self.uc.mem_write(address, struct.pack("<I", value & 0xFFFFFFFF))
+
+    def _setup_parameter_context(self) -> None:
+        root = 0x20002000
+        object_ = 0x20003000
+        offsets = 0x20004000
+        holder = 0x20005000
+        parameter_data = 0x20006000
+        self._write_word(SAMPLE_PARAMETER_CONTEXT_POINTER, root)
+        self._write_word(root + 0x318, object_)
+        self._write_word(object_ + 4, offsets)
+        self._write_word(object_ + 0x0C, holder)
+        self._write_word(holder, parameter_data)
+        for parameter in range(28):
+            self.uc.mem_write(offsets + parameter * 8, struct.pack("<H", 0x100 + parameter))
+            self.uc.mem_write(parameter_data + 0x100 + parameter, bytes((self.raw_value,)))
+        self.parameter_data = parameter_data
+
+    def parameter_byte(self, parameter: int) -> int:
+        return self.uc.mem_read(self.parameter_data + 0x100 + parameter, 1)[0]
+
+    @staticmethod
+    def _return(uc: Uc) -> None:
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    def _hook(self, uc: Uc, address: int, size: int, _: object) -> None:
+        if address == RETURN_SENTINEL:
+            uc.emu_stop()
+            return
+        if address == STOCK_DRUM_CONTROL_GETTER:
+            uc.reg_write(UC_ARM_REG_R0, self.raw_value)
+            self._return(uc)
+            return
+        if address == STOCK_BUTTON_PRESSED:
+            uc.reg_write(UC_ARM_REG_R0, int(self.shift))
+            self._return(uc)
+            return
+        if address == SAMPLE_DSP_GETTER:
+            register = uc.reg_read(UC_ARM_REG_R0) & 0xFFFF
+            uc.reg_write(UC_ARM_REG_R0, self.dsp.get(register, 0))
+            self._return(uc)
+            return
+        if address == SAMPLE_DSP_SETTER:
+            register = uc.reg_read(UC_ARM_REG_R1) & 0xFFFF
+            value = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            self.dsp[register] = value
+            self.setter_calls.append((register, value))
+            self._return(uc)
+
+    def run(self, parameter: int) -> int:
+        self.uc.reg_write(UC_ARM_REG_R0, 0x10)
+        self.uc.reg_write(UC_ARM_REG_R1, parameter)
+        self.uc.reg_write(UC_ARM_REG_R4, 0)
+        self.uc.reg_write(UC_ARM_REG_SP, STACK)
+        self.uc.reg_write(UC_ARM_REG_LR, RETURN_SENTINEL | 1)
+        self.uc.emu_start(SAMPLE_ARM_CAVE_START | 1, RETURN_SENTINEL | 1, count=700)
+        pc = self.uc.reg_read(UC_ARM_REG_PC) & ~1
+        if pc != RETURN_SENTINEL:
+            raise ValueError(f"sample-start emulation stopped at {pc:#010x}")
+        return self.uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+
+
+def install_sample_descriptor(
+    emulator: SampleControlEmulator,
+    *,
+    drum: int,
+    sample: int,
+    length: int,
+) -> None:
+    emulator.dsp[0x009F + drum * 10] = sample << 8
+    emulator.dsp[0x1D0E + sample * 4] = length
+
+
+def sample_start_emulation_checks(patched: bytes) -> dict:
+    length = 0x003E0000
+
+    normal = SampleControlEmulator(patched, raw_value=70, shift=False)
+    install_sample_descriptor(normal, drum=0, sample=6, length=length)
+    if normal.run(3) != 70 or normal.dsp.get(DECAY_CACHE_BASE) != 70 << 24:
+        raise ValueError("normal Drum 1 decay was not cached and returned unchanged")
+
+    first = SampleControlEmulator(patched, raw_value=71, shift=True)
+    install_sample_descriptor(first, drum=0, sample=6, length=length)
+    first.dsp[DECAY_CACHE_BASE] = 70 << 24
+    first.dsp[OFFSET_RAW_BASE] = 20 << 24
+    if first.run(3) != 70 or first.dsp.get(OFFSET_RAW_BASE) != 22 << 24:
+        raise ValueError("first sample-start encoder event was not accumulated")
+    expected_cache = (70 << 24) | ((71 | 0x80) << 16)
+    if first.dsp.get(DECAY_CACHE_BASE) != expected_cache:
+        raise ValueError("first sample-start event did not cache its encoder value")
+    if first.parameter_byte(3) != 70:
+        raise ValueError("Shift+Macro 3 changed the stored decay byte")
+
+    second = SampleControlEmulator(patched, raw_value=72, shift=True)
+    install_sample_descriptor(second, drum=0, sample=6, length=length)
+    second.dsp[DECAY_CACHE_BASE] = expected_cache
+    second.dsp[OFFSET_RAW_BASE] = 22 << 24
+    if second.run(3) != 70 or second.dsp.get(OFFSET_RAW_BASE) != 24 << 24:
+        raise ValueError("consecutive sample-start movement was not measured per event")
+
+    reverse = SampleControlEmulator(patched, raw_value=70, shift=True)
+    install_sample_descriptor(reverse, drum=0, sample=6, length=length)
+    reverse.dsp[DECAY_CACHE_BASE] = (70 << 24) | ((72 | 0x80) << 16)
+    reverse.dsp[OFFSET_RAW_BASE] = 24 << 24
+    if reverse.run(3) != 70 or reverse.dsp.get(OFFSET_RAW_BASE) != 20 << 24:
+        raise ValueError("sample-start direction reversal failed")
+
+    high = SampleControlEmulator(patched, raw_value=90, shift=True)
+    install_sample_descriptor(high, drum=1, sample=6, length=length)
+    high.dsp[DECAY_CACHE_BASE + 1] = (70 << 24) | ((86 | 0x80) << 16)
+    high.dsp[OFFSET_RAW_BASE + 1] = 120 << 24
+    if high.run(10) != 70 or high.dsp.get(OFFSET_RAW_BASE + 1) != 127 << 24:
+        raise ValueError("sample-start high clamp failed")
+    if high.dsp.get(OFFSET_DISPLACEMENT_BASE + 1) != length - 1:
+        raise ValueError("sample-start maximum did not reach final safe position")
+
+    low = SampleControlEmulator(patched, raw_value=30, shift=True)
+    install_sample_descriptor(low, drum=2, sample=6, length=length)
+    low.dsp[DECAY_CACHE_BASE + 2] = (70 << 24) | ((36 | 0x80) << 16)
+    low.dsp[OFFSET_RAW_BASE + 2] = 10 << 24
+    if low.run(17) != 70 or low.dsp.get(OFFSET_RAW_BASE + 2, -1) != 0:
+        raise ValueError("sample-start low clamp failed")
+
+    drum4 = SampleControlEmulator(patched, raw_value=44, shift=True)
+    install_sample_descriptor(drum4, drum=3, sample=60, length=length)
+    drum4.dsp[DECAY_CACHE_BASE + 3] = (91 << 24) | ((45 | 0x80) << 16)
+    drum4.dsp[OFFSET_RAW_BASE + 3] = 60 << 24
+    if drum4.run(24) != 91 or drum4.dsp.get(OFFSET_RAW_BASE + 3) != 58 << 24:
+        raise ValueError("Drum 4 independent sample-start state failed")
+
+    patch = SampleControlEmulator(patched, raw_value=9, shift=False)
+    patch.dsp[OFFSET_RAW_BASE] = 100 << 24
+    patch.dsp[0x1D0E + 9 * 4] = length
+    if patch.run(0) != 9:
+        raise ValueError("sample change did not retain stock patch return value")
+    if patch.dsp.get(OFFSET_DISPLACEMENT_BASE) != (length >> 7) * 100:
+        raise ValueError("sample change did not recompute the saved offset")
+
+    for test_length in (0x00010000, 0x003E0000, 0x7FFFFF00):
+        for value in (0, 1, 64, 126, 127):
+            displacement = test_length - 1 if value == 127 else (test_length >> 7) * value
+            if not 0 <= displacement < test_length:
+                raise ValueError("sample-start displacement escaped descriptor length")
+
+    return {
+        "normal_decay": "unchanged",
+        "relative_events": "first, consecutive, and reverse passed",
+        "resolution": "two offset units per event; approximately 64 positions",
+        "clamps": "beginning and final safe sample position passed",
+        "sample_change": "saved offset recomputed for new descriptor length",
+        "independent_drums": "Drum 4 state verified separately",
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1406,14 +1607,14 @@ def main() -> None:
         type=Path,
         default=Path("build")
         / "circuit-scale-follow"
-        / "circuit-3592-scale-follow-distortion-select.bin",
+        / "circuit-3592-scale-follow-distortion-sample-start.bin",
     )
     parser.add_argument(
         "--manifest",
         type=Path,
         default=Path("build")
         / "circuit-scale-follow"
-        / "circuit-3592-scale-follow-distortion-select-manifest.json",
+        / "circuit-3592-scale-follow-distortion-sample-start-manifest.json",
     )
     args = parser.parse_args()
 
@@ -1423,6 +1624,7 @@ def main() -> None:
     report = {
         "static": static_checks(stock, patched, manifest),
         "emulation": emulation_checks(stock, patched),
+        "sample_start": sample_start_emulation_checks(patched),
     }
     print(json.dumps(report, indent=2))
 

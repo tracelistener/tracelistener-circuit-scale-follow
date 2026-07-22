@@ -1,4 +1,4 @@
-"""Build Scale Follow plus Drum Distortion Select for Circuit firmware 3592.
+"""Build Scale Follow, Drum Distortion Select, and Sample Start for Circuit 3592.
 
 The patch is intentionally narrow:
 
@@ -16,6 +16,8 @@ The patch is intentionally narrow:
   handling is not modified.
 * Shift + the normal Drum Distortion Macro selects one of all seven stock DSP
   algorithms independently for each drum without moving the stored amount.
+* Shift + the normal Drum Decay Macro moves an independent sample-start point
+  for each drum while preserving normal decay behavior.
 
 No output from this script should be flashed until ``verify_build`` succeeds.
 """
@@ -32,16 +34,22 @@ from keystone import KS_ARCH_ARM, KS_MODE_LITTLE_ENDIAN, KS_MODE_THUMB, Ks
 
 from circuit_fw_tools import decode_firmware, encode_firmware, load
 from circuit_scale_follow import SCALE_INTERVALS, self_test as mapping_self_test
+from circuit_sample_start_patch import (
+    OUTPUT_IMAGE_SHA256 as SAMPLE_START_IMAGE_SHA256,
+    apply_sample_start_control,
+    sample_start_allowed_offsets,
+)
 
 
 BASE = 0x08008000
 IMAGE_SIZE = 0x2EB80
-RELEASE_VERSION = "0.3.0"
+RELEASE_VERSION = "0.4.0"
 STOCK_IMAGE_SHA256 = "1a424d4f116c9b76c3e4e9c1cfa1abb3e262f7d120529c23992e7ee047e1f1ee"
 STOCK_SYSEX_SHA256 = "260a72ebd10208aae44f7c01ad18a79cf1d7ad32658ecd1dee0d5215c0e6b7c0"
 SCALE_FOLLOW_IMAGE_SHA256 = "3030e159eb01d02872a40cc0416e79b6953bdabd1229c066a0ea41573087b603"
-PATCHED_IMAGE_SHA256 = "0198d2dd35853dbfeb35d1aff64d96736f71f193f1e02701f79cea2054122a75"
-PATCHED_SYSEX_SHA256 = "33012ecb50161111f1434343cd3ec8945fc35dc3390d7c303337e754d59b9fa0"
+DISTORTION_IMAGE_SHA256 = "0198d2dd35853dbfeb35d1aff64d96736f71f193f1e02701f79cea2054122a75"
+PATCHED_IMAGE_SHA256 = SAMPLE_START_IMAGE_SHA256
+PATCHED_SYSEX_SHA256 = "0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95"
 
 PARAMETER_MAP = 0x20002D00
 PARAMETER_MAP_LENGTH = 0xAE
@@ -912,11 +920,15 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
     if sha256(image) != SCALE_FOLLOW_IMAGE_SHA256:
         raise ValueError("Scale Follow stage does not match the hardware-tested release")
     distortion = apply_distortion_selector(image)
+    if sha256(image) != DISTORTION_IMAGE_SHA256:
+        raise ValueError("distortion stage does not match the hardware-tested 0.3.0 release")
+    final_image, sample_start = apply_sample_start_control(bytes(image))
+    image = bytearray(final_image)
     if sha256(image) != PATCHED_IMAGE_SHA256:
         raise ValueError("combined image does not match the hardware-tested release")
 
     manifest = {
-        "project": "Circuit Scale Follow + Drum Distortion Select",
+        "project": "Circuit Scale Follow + Drum Distortion Select + Sample Start",
         "release": RELEASE_VERSION,
         "target": "original Novation Circuit firmware 1.8 build 3592",
         "base": f"{BASE:#010x}",
@@ -945,6 +957,7 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
         "reference_pitch": "loaded sample at C when stock pitch is 64",
         "range": "two scale octaves below through two scale octaves above the master tonic",
         "distortion_selector": distortion,
+        "sample_start": sample_start,
         "code_sections": sections,
         "patch_sites": sites,
     }
@@ -962,6 +975,7 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
     for site in PATCH_SITES:
         allowed.update(range(offset(site.address), offset(site.address) + len(site.stock)))
     allowed.update(distortion_allowed_offsets())
+    allowed.update(sample_start_allowed_offsets())
     unexpected = sorted(changed - allowed)
     if unexpected:
         raise ValueError(f"unexpected changed image offsets: {unexpected[:16]}")
@@ -984,6 +998,7 @@ def verify_build(stock: bytes, patched: bytes, sysex: bytes, manifest: dict) -> 
         "patched_image_sha256": manifest["patched_image_sha256"],
         "mapping_tests": "passed for 16 scales x 12 roots x 128 CC values",
         "distortion_selector": "four independent drums, seven DSP algorithms",
+        "sample_start": "four independent runtime offsets, approximately 64 positions",
     }
 
 
@@ -1003,11 +1018,11 @@ def build_from_sysex(stock_sysex: Path, output_dir: Path) -> BuildArtifacts:
     manifest["verification"] = verification
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    image_path = output_dir / "circuit-3592-scale-follow-distortion-select.bin"
+    image_path = output_dir / "circuit-3592-scale-follow-distortion-sample-start.bin"
     stock_image_path = output_dir / "circuit-3592-stock.bin"
-    sysex_path = output_dir / "circuit-3592-scale-follow-distortion-select.syx"
+    sysex_path = output_dir / "circuit-3592-scale-follow-distortion-sample-start.syx"
     recovery_path = output_dir / "circuit-3592-stock-recovery.syx"
-    manifest_path = output_dir / "circuit-3592-scale-follow-distortion-select-manifest.json"
+    manifest_path = output_dir / "circuit-3592-scale-follow-distortion-sample-start-manifest.json"
     image_path.write_bytes(patched)
     stock_image_path.write_bytes(stock)
     sysex_path.write_bytes(rebuilt_sysex)
