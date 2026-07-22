@@ -14,14 +14,14 @@
 
 Download these two files from the latest GitHub release:
 
-- `CircuitScaleFollowTool-v0.4.0-Windows-x64.zip`
-- `CircuitScaleFollowTool-v0.4.0-Windows-x64.zip.sha256.txt`
+- `CircuitScaleFollowTool-v0.4.1-Windows-x64.zip`
+- `CircuitScaleFollowTool-v0.4.1-Windows-x64.zip.sha256.txt`
 
 In PowerShell, verify the ZIP before extracting it:
 
 ```powershell
-Get-FileHash .\CircuitScaleFollowTool-v0.4.0-Windows-x64.zip -Algorithm SHA256
-Get-Content .\CircuitScaleFollowTool-v0.4.0-Windows-x64.zip.sha256.txt
+Get-FileHash .\CircuitScaleFollowTool-v0.4.1-Windows-x64.zip -Algorithm SHA256
+Get-Content .\CircuitScaleFollowTool-v0.4.1-Windows-x64.zip.sha256.txt
 ```
 
 The two hashes must match exactly. The executable is not commercially code-signed, so Windows may identify the publisher as unknown. The source and reproducible build script are included in this repository.
@@ -63,6 +63,7 @@ Upload remains disabled unless that exact result is produced.
 5. Read the final confirmation carefully and begin the transfer.
 6. Do not touch power, USB, or MIDI cables for approximately 2¼ minutes.
 7. Wait for the Circuit to finish or restart before disconnecting anything.
+8. Turn it off and remove USB, MIDI, external power, and batteries (if fitted) for 10 seconds, then start normally. This one-time cold boot clears RAM retained by the bootloader restart so Scale Follow initializes on.
 
 Scale Follow is on after boot. Hold **Shift** and press **Scales** to toggle it. For ordinary root/scale selection, enter the normal **Scales** view and choose the new setting; Scales does not need to remain held.
 

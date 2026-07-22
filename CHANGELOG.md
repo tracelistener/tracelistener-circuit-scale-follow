@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-07-22
+
+- Require a one-time 10-second cold power removal after firmware upload.
+- Explain that the bootloader's warm restart can retain the previous Scale Follow RAM state.
+- Add the cold-boot instruction to the GUI completion dialog, README, and Windows walkthrough.
+- Keep the v0.4.0 firmware image and SysEx bytes unchanged.
+
 ## 0.4.0 — 2026-07-22
 
 - Add Shift + Macro 3/4 per-drum sample-start control.
