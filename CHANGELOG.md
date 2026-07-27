@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.2 — 2026-07-26
+
+- Fix Synth 1 patch changes overwriting drum distortion algorithm selections.
+- Move the four selectors from live Synth 1 voice state at DSP Y:$0109–$010B to independent X:$1E65–$1E68 words.
+- Remove the packed Drum 3/4 representation; every drum now owns a complete word.
+- Preserve normal Macro 5/6 amount control, Scale Follow, Sample Start, and cold-boot behavior.
+- Add emulated regression coverage for every drum, both directions, repeated events, direction reversal, invalid state, and Synth 1 isolation.
+- Hardware-validate Synth 1 patch switching, all four independent selectors, normal distortion amount, Scale Follow, Sample Start, and cold boot.
+- Add focused troubleshooting for a Windows MIDI backend failure on the first SysEx message.
+
 ## 0.4.1 — 2026-07-22
 
 - Require a one-time 10-second cold power removal after firmware upload.

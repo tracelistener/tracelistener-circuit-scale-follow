@@ -82,7 +82,19 @@ def send_release(
     started = time.monotonic()
     try:
         for index, message in enumerate(messages, start=1):
-            midi_out.send_message(list(message.raw))
+            try:
+                midi_out.send_message(list(message.raw))
+            except Exception as exc:
+                if index == 1:
+                    raise RuntimeError(
+                        "Windows rejected the first SysEx message before a firmware "
+                        "block was accepted. Close Components, DAWs, browser MIDI "
+                        "pages, and other MIDI tools; connect the Circuit directly; "
+                        "enter bootloader mode; click Refresh; and select the Circuit "
+                        "Bootloader output. Original error: "
+                        f"{exc}"
+                    ) from exc
+                raise
             if message.command == 0x71:
                 time.sleep(0.5)
             else:

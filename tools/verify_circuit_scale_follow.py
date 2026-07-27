@@ -18,6 +18,8 @@ from unicorn.arm_const import (
     UC_ARM_REG_R3,
     UC_ARM_REG_R4,
     UC_ARM_REG_R5,
+    UC_ARM_REG_R6,
+    UC_ARM_REG_R7,
     UC_ARM_REG_SP,
 )
 
@@ -25,8 +27,16 @@ from build_circuit_scale_follow import (
     BASE,
     CODE_SECTIONS,
     DISTORTION_ARM_COMMON,
+    DISTORTION_ARM_D1_ENTRY,
+    DISTORTION_ARM_SLOT_END,
+    DISTORTION_AMOUNT_REGISTERS,
     DISTORTION_CAVE_END,
     DISTORTION_HOOKS,
+    DISTORTION_PARAMETER_IDS,
+    DISTORTION_TYPE_REGISTERS,
+    DSP_GETTER,
+    DSP_PROGRAM_DATA,
+    DSP_SETTER,
     DSP_CALL_ADDRESS,
     DSP_TRAMPOLINE_ADDRESS,
     DSP_TRAMPOLINE_PC,
@@ -40,6 +50,7 @@ from build_circuit_scale_follow import (
     MODE_BIT,
     PARAMETER_MAP,
     PARAMETER_MAP_LENGTH,
+    PARAMETER_CONTEXT_POINTER,
     PATCH_SITES,
     PATCHED_IMAGE_SHA256,
     SCALE_MASK,
@@ -63,6 +74,7 @@ from build_circuit_scale_follow import (
     UPDATE_SCALE,
     assemble,
     build_distortion_arm_code,
+    build_distortion_arm_common_code,
     build_distortion_dsp_trampoline,
     dsp_bytes,
     sha256,
@@ -207,14 +219,27 @@ def distortion_static_checks(patched: bytes, manifest: dict) -> dict:
     details = manifest.get("distortion_selector", {})
     if details.get("dsp_trampoline_words") != dsp_metadata["word_count"]:
         raise ValueError("manifest distortion trampoline length is incorrect")
-    if details.get("drum_3_4_storage") != "packed fields in proven-stable DSP Y:$010B":
-        raise ValueError("manifest does not declare the hardware-tested Drum 3/4 storage")
+    expected_registers = [
+        f"X:${address:04X}" for address in DISTORTION_TYPE_REGISTERS
+    ]
+    if details.get("type_registers") != expected_registers:
+        raise ValueError("manifest does not declare four independent type words")
+    if details.get("state_storage") != (
+        "four independent DSP X-memory words X:$1E65..$1E68"
+    ):
+        raise ValueError("manifest does not declare the repaired selector storage")
+    if details.get("arm_code_length") != len(build_distortion_arm_common_code()):
+        raise ValueError("manifest distortion ARM code length is incorrect")
+    if details.get("arm_slot_length") != DISTORTION_ARM_SLOT_END - DISTORTION_ARM_COMMON:
+        raise ValueError("manifest distortion ARM slot length is incorrect")
 
     return {
         "dsp_trampoline_words": dsp_metadata["word_count"],
-        "arm_wrapper_bytes": len(common),
+        "arm_code_bytes": len(build_distortion_arm_common_code()),
+        "arm_slot_bytes": len(common),
         "drum_hooks": len(DISTORTION_HOOKS),
-        "drum_3_4_state": "packed in DSP Y:$010B",
+        "type_state": "four independent DSP X-memory words",
+        "synth_1_collision": "Y:$0109..$010B no longer addressed",
     }
 
 
@@ -1423,6 +1448,232 @@ def emulation_checks(stock: bytes, patched: bytes) -> dict:
     }
 
 
+class DistortionControlEmulator:
+    """Focused emulator for the repaired Shift+Distortion wrapper."""
+
+    def __init__(self, image: bytes, *, raw_value: int, shift: bool):
+        self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+        self.uc.mem_map(FLASH_MAP_BASE, FLASH_MAP_SIZE)
+        self.uc.mem_write(BASE, image)
+        self.uc.mem_map(RAM_BASE, RAM_SIZE)
+        self.raw_value = raw_value
+        self.shift = shift
+        self.dsp: dict[int, int] = {}
+        self.getter_calls: list[int] = []
+        self.setter_calls: list[tuple[int, int]] = []
+        self.uc.hook_add(UC_HOOK_CODE, self._hook)
+        self._setup_parameter_context()
+
+    def _write_word(self, address: int, value: int) -> None:
+        self.uc.mem_write(address, struct.pack("<I", value & 0xFFFFFFFF))
+
+    def _setup_parameter_context(self) -> None:
+        root = 0x20002000
+        object_ = 0x20003000
+        offsets = 0x20004000
+        holder = 0x20005000
+        parameter_data = 0x20006000
+        self._write_word(PARAMETER_CONTEXT_POINTER, root)
+        self._write_word(root + 0x318, object_)
+        self._write_word(object_ + 4, offsets)
+        self._write_word(object_ + 0x0C, holder)
+        self._write_word(holder, parameter_data)
+        for parameter in range(28):
+            self.uc.mem_write(
+                offsets + parameter * 8,
+                struct.pack("<H", 0x100 + parameter),
+            )
+            self.uc.mem_write(parameter_data + 0x100 + parameter, b"\x40")
+        self.parameter_data = parameter_data
+
+    def set_parameter_byte(self, parameter: int, value: int) -> None:
+        self.uc.mem_write(
+            self.parameter_data + 0x100 + parameter,
+            bytes((value & 0xFF,)),
+        )
+
+    def parameter_byte(self, parameter: int) -> int:
+        return self.uc.mem_read(
+            self.parameter_data + 0x100 + parameter,
+            1,
+        )[0]
+
+    @staticmethod
+    def _return(uc: Uc) -> None:
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    def _hook(self, uc: Uc, address: int, size: int, _: object) -> None:
+        if address == RETURN_SENTINEL:
+            uc.emu_stop()
+            return
+        if address == STOCK_DRUM_CONTROL_GETTER:
+            uc.reg_write(UC_ARM_REG_R0, self.raw_value)
+            self._return(uc)
+            return
+        if address == STOCK_BUTTON_PRESSED:
+            uc.reg_write(UC_ARM_REG_R0, int(self.shift))
+            self._return(uc)
+            return
+        if address == DSP_GETTER:
+            register = uc.reg_read(UC_ARM_REG_R0) & 0xFFFF
+            self.getter_calls.append(register)
+            uc.reg_write(UC_ARM_REG_R0, self.dsp.get(register, 0) & 0xFFFFFF00)
+            self._return(uc)
+            return
+        if address == DSP_SETTER:
+            register = uc.reg_read(UC_ARM_REG_R1) & 0xFFFF
+            value = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFF00
+            self.dsp[register] = value
+            self.setter_calls.append((register, value))
+            self._return(uc)
+
+    def run(self, drum_index: int) -> int:
+        parameter = DISTORTION_PARAMETER_IDS[drum_index]
+        preserved = {
+            UC_ARM_REG_R1: parameter,
+            UC_ARM_REG_R3: 0x33333333,
+            UC_ARM_REG_R4: 0x44444444,
+            UC_ARM_REG_R5: 0x55555555,
+            UC_ARM_REG_R6: 0x66666666,
+            UC_ARM_REG_R7: 0x77777777,
+        }
+        self.uc.reg_write(UC_ARM_REG_R0, 0x10)
+        self.uc.reg_write(UC_ARM_REG_R1, parameter)
+        self.uc.reg_write(UC_ARM_REG_R2, 0x22222222)
+        for register, value in preserved.items():
+            self.uc.reg_write(register, value)
+        self.uc.reg_write(UC_ARM_REG_SP, STACK)
+        self.uc.reg_write(UC_ARM_REG_LR, RETURN_SENTINEL | 1)
+        entry = DISTORTION_ARM_D1_ENTRY + drum_index * 4
+        self.uc.emu_start(entry | 1, RETURN_SENTINEL | 1, count=1000)
+        pc = self.uc.reg_read(UC_ARM_REG_PC) & ~1
+        if pc != RETURN_SENTINEL:
+            raise ValueError(
+                f"distortion wrapper stopped at {pc:#010x}, expected return"
+            )
+        for register, expected in preserved.items():
+            actual = self.uc.reg_read(register) & 0xFFFFFFFF
+            if actual != expected:
+                raise ValueError(
+                    f"distortion wrapper corrupted register {register}: "
+                    f"{actual:#010x} != {expected:#010x}"
+                )
+        return self.uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+
+
+def _install_distortion_types(
+    emulator: DistortionControlEmulator,
+    values: tuple[int, int, int, int],
+) -> None:
+    for address, value in zip(DISTORTION_TYPE_REGISTERS, values):
+        emulator.dsp[address] = value << 8
+
+
+def distortion_selector_emulation_checks(patched: bytes) -> dict:
+    """Cover independence, direction, and the Synth 1 overwrite regression."""
+
+    initial = (1, 2, 3, 4)
+    old_synth_y = (0x8109, 0x810A, 0x810B)
+
+    for drum in range(4):
+        normal = DistortionControlEmulator(patched, raw_value=79, shift=False)
+        _install_distortion_types(normal, initial)
+        parameter = DISTORTION_PARAMETER_IDS[drum]
+        normal.set_parameter_byte(parameter, 79)
+        before = dict(normal.dsp)
+        if normal.run(drum) != 79:
+            raise ValueError(f"Drum {drum + 1} normal distortion amount changed")
+        if normal.dsp != before or normal.setter_calls:
+            raise ValueError(f"Drum {drum + 1} non-Shift path changed type state")
+        if normal.parameter_byte(parameter) != 79:
+            raise ValueError(f"Drum {drum + 1} non-Shift path changed stored amount")
+
+    directional_cases = 0
+    for drum in range(4):
+        for raw, delta in ((65, 1), (63, -1)):
+            emulator = DistortionControlEmulator(
+                patched,
+                raw_value=raw,
+                shift=True,
+            )
+            _install_distortion_types(emulator, initial)
+            for index, register in enumerate(old_synth_y):
+                emulator.dsp[register] = (0x13579B + index * 0x111111) << 8
+            emulator.dsp[DISTORTION_AMOUNT_REGISTERS[drum]] = 64 << 24
+            parameter = DISTORTION_PARAMETER_IDS[drum]
+            emulator.set_parameter_byte(parameter, raw)
+            old_y_values = {
+                register: emulator.dsp[register] for register in old_synth_y
+            }
+
+            if emulator.run(drum) != 64:
+                raise ValueError(f"Drum {drum + 1} Shift path changed its amount")
+            expected = (initial[drum] + delta) % 7
+            for index, address in enumerate(DISTORTION_TYPE_REGISTERS):
+                actual = emulator.dsp[address] >> 8
+                wanted = expected if index == drum else initial[index]
+                if actual != wanted:
+                    raise ValueError(
+                        f"Drum {drum + 1} corrupted type state {address:#06x}"
+                    )
+            if emulator.parameter_byte(parameter) != 64:
+                raise ValueError(f"Drum {drum + 1} amount byte was not restored")
+            if {
+                register: emulator.dsp[register] for register in old_synth_y
+            } != old_y_values:
+                raise ValueError("distortion selection changed Synth 1 Y state")
+            if any(register in emulator.getter_calls for register in old_synth_y):
+                raise ValueError("distortion selection still reads Synth 1 Y state")
+            if emulator.setter_calls != [
+                (DISTORTION_TYPE_REGISTERS[drum], expected << 8)
+            ]:
+                raise ValueError(f"Drum {drum + 1} wrote the wrong private type word")
+            directional_cases += 1
+
+    repeated = DistortionControlEmulator(patched, raw_value=65, shift=True)
+    _install_distortion_types(repeated, (0, 2, 3, 4))
+    repeated.dsp[DISTORTION_AMOUNT_REGISTERS[0]] = 64 << 24
+    for _ in range(9):
+        repeated.run(0)
+    if repeated.dsp[DISTORTION_TYPE_REGISTERS[0]] != 2 << 8:
+        raise ValueError("repeated clockwise selector events did not wrap")
+    repeated.raw_value = 63
+    repeated.run(0)
+    if repeated.dsp[DISTORTION_TYPE_REGISTERS[0]] != 1 << 8:
+        raise ValueError("selector direction reversal did not decrement")
+
+    invalid = DistortionControlEmulator(patched, raw_value=65, shift=True)
+    _install_distortion_types(invalid, (0x1234, 2, 3, 4))
+    invalid.dsp[DISTORTION_AMOUNT_REGISTERS[0]] = 64 << 24
+    invalid.run(0)
+    if invalid.dsp[DISTORTION_TYPE_REGISTERS[0]] != 1 << 8:
+        raise ValueError("invalid private type did not fall back to diode")
+
+    # These externally disassembled, unchanged stock sites prove why the old
+    # Y:$0109..$010B storage collided with Synth 1 voice state.
+    liveness_signatures = (
+        (DSP_PROGRAM_DATA + 0x1ACD * 3, bytes.fromhex("64 F4 00 00 01 09")),
+        (DSP_PROGRAM_DATA + 0x1ACF * 3, bytes.fromhex("3C 60 00")),
+        (DSP_PROGRAM_DATA + 0x1FFC * 3, bytes.fromhex("64 DB 00")),
+        (DSP_PROGRAM_DATA + 0x03BD * 3, bytes.fromhex("4E DC C8")),
+    )
+    for address, expected in liveness_signatures:
+        start = address - BASE
+        if patched[start : start + len(expected)] != expected:
+            raise ValueError(
+                f"Synth 1 state liveness signature changed at {address:#010x}"
+            )
+
+    return {
+        "normal_amount_paths": 4,
+        "directional_cases": directional_cases,
+        "repeated_and_reversed_events": "passed",
+        "invalid_state_fallback": "passed",
+        "independent_type_words": [f"X:${value:04X}" for value in DISTORTION_TYPE_REGISTERS],
+        "synth_1_patch_isolation": "passed",
+    }
+
+
 class SampleControlEmulator:
     """Focused emulator for the Shift+Decay sample-start wrapper."""
 
@@ -1624,6 +1875,7 @@ def main() -> None:
     report = {
         "static": static_checks(stock, patched, manifest),
         "emulation": emulation_checks(stock, patched),
+        "distortion_selector": distortion_selector_emulation_checks(patched),
         "sample_start": sample_start_emulation_checks(patched),
     }
     print(json.dumps(report, indent=2))
