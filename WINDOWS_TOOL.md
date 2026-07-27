@@ -14,14 +14,14 @@
 
 Download these two files from the latest GitHub release:
 
-- `CircuitScaleFollowTool-v0.4.1-Windows-x64.zip`
-- `CircuitScaleFollowTool-v0.4.1-Windows-x64.zip.sha256.txt`
+- `CircuitScaleFollowTool-v0.4.2-Windows-x64.zip`
+- `CircuitScaleFollowTool-v0.4.2-Windows-x64.zip.sha256.txt`
 
 In PowerShell, verify the ZIP before extracting it:
 
 ```powershell
-Get-FileHash .\CircuitScaleFollowTool-v0.4.1-Windows-x64.zip -Algorithm SHA256
-Get-Content .\CircuitScaleFollowTool-v0.4.1-Windows-x64.zip.sha256.txt
+Get-FileHash .\CircuitScaleFollowTool-v0.4.2-Windows-x64.zip -Algorithm SHA256
+Get-Content .\CircuitScaleFollowTool-v0.4.2-Windows-x64.zip.sha256.txt
 ```
 
 The two hashes must match exactly. The executable is not commercially code-signed, so Windows may identify the publisher as unknown. The source and reproducible build script are included in this repository.
@@ -49,7 +49,7 @@ It creates:
 The expected mod SHA-256 is:
 
 ```text
-0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95
+0cfdbeb08c13f1b5d97276ee02d3cad91d3ec514f689a06ba7745bc773fe4c9f
 ```
 
 Upload remains disabled unless that exact result is produced.
@@ -74,6 +74,8 @@ For distortion selection, use the active drum pair and hold **Shift** while turn
 If a transfer fails, leave the Circuit powered. Reopen the tool and click **Upload Stock Recovery**, or reinstall stock firmware through Novation's official updater. Do not repeatedly power-cycle a unit left in an incomplete update state.
 
 The GUI uploads only the generated Scale Follow file or its exact stock recovery file. Both hashes are rechecked immediately before transfer, preventing accidental selection of unrelated or damaged firmware.
+
+If Windows reports `MidiOutWinMM::sendMessage: error sending sysex message` on message 1, it rejected the transfer before accepting a firmware block. Close Components, DAWs, browser WebMIDI pages, and other MIDI utilities; connect the Circuit directly rather than through a hub; enter bootloader mode before opening the tool; click **Refresh**; and explicitly select the **Circuit Bootloader** output. If it still fails, include the Windows version, exact selected port name, tool version, USB/hub details, and complete tool log in the issue report. Components remains the safest stock-recovery path.
 
 ## Reproduce the Windows package
 

@@ -43,13 +43,13 @@ from circuit_sample_start_patch import (
 
 BASE = 0x08008000
 IMAGE_SIZE = 0x2EB80
-RELEASE_VERSION = "0.4.1"
+RELEASE_VERSION = "0.4.2"
 STOCK_IMAGE_SHA256 = "1a424d4f116c9b76c3e4e9c1cfa1abb3e262f7d120529c23992e7ee047e1f1ee"
 STOCK_SYSEX_SHA256 = "260a72ebd10208aae44f7c01ad18a79cf1d7ad32658ecd1dee0d5215c0e6b7c0"
 SCALE_FOLLOW_IMAGE_SHA256 = "3030e159eb01d02872a40cc0416e79b6953bdabd1229c066a0ea41573087b603"
-DISTORTION_IMAGE_SHA256 = "0198d2dd35853dbfeb35d1aff64d96736f71f193f1e02701f79cea2054122a75"
+DISTORTION_IMAGE_SHA256 = "8417a464ad5f6d5ac33e4b345a013ba016583221772a625b208710392ce9856b"
 PATCHED_IMAGE_SHA256 = SAMPLE_START_IMAGE_SHA256
-PATCHED_SYSEX_SHA256 = "0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95"
+PATCHED_SYSEX_SHA256 = "0cfdbeb08c13f1b5d97276ee02d3cad91d3ec514f689a06ba7745bc773fe4c9f"
 
 PARAMETER_MAP = 0x20002D00
 PARAMETER_MAP_LENGTH = 0xAE
@@ -109,13 +109,15 @@ DISTORTION_ARM_D2_ENTRY = DISTORTION_ARM_D1_ENTRY + 4
 DISTORTION_ARM_D3_ENTRY = DISTORTION_ARM_D2_ENTRY + 4
 DISTORTION_ARM_D4_ENTRY = DISTORTION_ARM_D3_ENTRY + 4
 DISTORTION_ARM_COMMON = DISTORTION_ARM_D4_ENTRY + 4
+DISTORTION_ARM_SLOT_END = 0x08025D90
 DISTORTION_CAVE_END = 0x08025E74
 
 DSP_SETTER = 0x0801633C
 DSP_GETTER = 0x08016E64
 PARAMETER_CONTEXT_POINTER = 0x20002DB0
-DISTORTION_TYPE_REGISTERS = (0x8109, 0x810A, 0x810B, 0x810B)
+DISTORTION_TYPE_REGISTERS = (0x1E65, 0x1E66, 0x1E67, 0x1E68)
 DISTORTION_AMOUNT_REGISTERS = (0x8101, 0x8102, 0x8103, 0x8104)
+DISTORTION_PARAMETER_IDS = (0x04, 0x0B, 0x12, 0x19)
 DISTORTION_ALGORITHMS = (
     "diode",
     "valve",
@@ -637,24 +639,22 @@ def build_distortion_dsp_trampoline() -> tuple[bytes, dict[str, int]]:
     emit(0x0140C5, 0x0000B3)
     branch(0x0AF0AA, "load_d3")
 
-    # Drum 3 and 4 share proven-stable Y:$010B.  Drum 3 occupies bits 0..2;
-    # Drum 4 occupies bits 3..5.  Y:$010D was rejected after hardware testing
-    # showed that stock DSP code rewrites it through an indirect pointer.
+    # Each drum now has an independent word outside stock voice state.  These
+    # direct X-memory encodings were confirmed with the repository's external
+    # DSP56300 disassembler before hardware testing.
     mark("load_d4")
-    emit(0x5FF000, 0x00010B)  # move y:>$10b,b
-    emit(0x0603A0)  # rep #<$3
-    emit(0x20002B)  # lsr b
-    emit(0x01478E)  # and #<$7,b
+    emit(0x57F000, DISTORTION_TYPE_REGISTERS[3])  # move x:>$1e68,b
+    emit(0x000000, 0x000000, 0x000000)
     branch(0x0AF080, "validate")
     mark("load_d1")
-    emit(0x5FF000, 0x000109)
+    emit(0x57F000, DISTORTION_TYPE_REGISTERS[0])
     branch(0x0AF080, "validate")
     mark("load_d2")
-    emit(0x5FF000, 0x00010A)
+    emit(0x57F000, DISTORTION_TYPE_REGISTERS[1])
     branch(0x0AF080, "validate")
     mark("load_d3")
-    emit(0x5FF000, 0x00010B)
-    emit(0x01478E)  # and #<$7,b
+    emit(0x57F000, DISTORTION_TYPE_REGISTERS[2])
+    emit(0x000000)
 
     # Invalid/reset memory falls back to stock diode distortion (type 0).
     mark("validate")
@@ -672,30 +672,10 @@ def build_distortion_dsp_trampoline() -> tuple[bytes, dict[str, int]]:
     return dsp_bytes(words), {"word_count": len(words), **labels}
 
 
-def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
-    """Build four tiny drum entries and the shared Shift/knob wrapper."""
+def build_distortion_arm_common_code() -> bytes:
+    """Build the unpacked four-word Shift/knob wrapper."""
 
-    entries: list[tuple[int, bytes, str]] = []
-    for index, address in enumerate(
-        (
-            DISTORTION_ARM_D1_ENTRY,
-            DISTORTION_ARM_D2_ENTRY,
-            DISTORTION_ARM_D3_ENTRY,
-            DISTORTION_ARM_D4_ENTRY,
-        )
-    ):
-        code = assemble(
-            f"""
-                movs r2, #{index}
-                b {DISTORTION_ARM_COMMON:#x}
-            """,
-            address,
-        )
-        if len(code) != 4:
-            raise ValueError(f"Drum {index + 1} selector entry is not four bytes")
-        entries.append((address, code, f"Drum {index + 1} distortion-selector entry"))
-
-    common = assemble(
+    return assemble(
         f"""
             push {{r1, r2, r3, r4, r5, r6, r7, lr}}
             mov r5, r1
@@ -713,27 +693,11 @@ def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
             bl {DSP_GETTER:#x}
             lsrs r4, r0, #24
 
-            movw r0, #0x8109
-            cmp r6, #3
-            bne selector_index_ready
-            movs r6, #2
-        selector_index_ready:
+            movw r0, #{DISTORTION_TYPE_REGISTERS[0]:#x}
             adds r0, r0, r6
-        selector_address_ready:
             mov r6, r0
             bl {DSP_GETTER:#x}
-            lsrs r3, r0, #8
-            mov r0, r3
-            cmp r5, #0x12
-            bne check_drum_4_current
-            and r0, r0, #7
-            b current_type_extracted
-        check_drum_4_current:
-            cmp r5, #0x19
-            bne current_type_extracted
-            lsrs r0, r0, #3
-            and r0, r0, #7
-        current_type_extracted:
+            lsrs r0, r0, #8
             cmp r0, #6
             bls current_type_valid
             movs r0, #0
@@ -770,17 +734,6 @@ def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
             cmp r2, #0
             beq return_old_amount
             mov r0, r7
-            cmp r5, #0x12
-            bne check_drum_4_pack
-            bic r3, r3, #7
-            orrs r0, r3
-            b packed_type_ready
-        check_drum_4_pack:
-            cmp r5, #0x19
-            bne packed_type_ready
-            bic r3, r3, #0x38
-            orr.w r0, r3, r7, lsl #3
-        packed_type_ready:
             lsl.w r0, r0, #8
             mov r1, r6
             bl {DSP_SETTER:#x}
@@ -795,9 +748,39 @@ def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
         """,
         DISTORTION_ARM_COMMON,
     )
-    if DISTORTION_ARM_COMMON + len(common) > DISTORTION_CAVE_END:
-        raise ValueError("distortion selector ARM wrapper exceeds its verified cave")
-    return entries, common
+
+
+def build_distortion_arm_code() -> tuple[list[tuple[int, bytes, str]], bytes]:
+    """Build four tiny drum entries and the fixed-size shared wrapper slot."""
+
+    entries: list[tuple[int, bytes, str]] = []
+    for index, address in enumerate(
+        (
+            DISTORTION_ARM_D1_ENTRY,
+            DISTORTION_ARM_D2_ENTRY,
+            DISTORTION_ARM_D3_ENTRY,
+            DISTORTION_ARM_D4_ENTRY,
+        )
+    ):
+        code = assemble(
+            f"""
+                movs r2, #{index}
+                b {DISTORTION_ARM_COMMON:#x}
+            """,
+            address,
+        )
+        if len(code) != 4:
+            raise ValueError(f"Drum {index + 1} selector entry is not four bytes")
+        entries.append((address, code, f"Drum {index + 1} distortion-selector entry"))
+
+    common = build_distortion_arm_common_code()
+    if DISTORTION_ARM_COMMON + len(common) > DISTORTION_ARM_SLOT_END:
+        raise ValueError("distortion selector ARM wrapper exceeds its verified slot")
+    padding_length = DISTORTION_ARM_SLOT_END - DISTORTION_ARM_COMMON - len(common)
+    if padding_length % 2:
+        raise ValueError("distortion selector ARM padding is not halfword-aligned")
+    slot = common + bytes.fromhex("00 BF") * (padding_length // 2)
+    return entries, slot
 
 
 def distortion_allowed_offsets() -> set[int]:
@@ -852,15 +835,24 @@ def apply_distortion_selector(image: bytearray) -> dict:
         "normal_macro_behavior": "unchanged",
         "amount_storage": "restored directly before the stock DSP callback returns",
         "algorithms": list(DISTORTION_ALGORITHMS),
-        "type_registers": [f"{value:#06x}" for value in DISTORTION_TYPE_REGISTERS],
+        "type_registers": [f"X:${value:04X}" for value in DISTORTION_TYPE_REGISTERS],
         "amount_registers": [f"{value:#06x}" for value in DISTORTION_AMOUNT_REGISTERS],
         "dsp_trampoline_pc": f"0x{DSP_TRAMPOLINE_PC:04X}",
         "dsp_trampoline_address": f"{DSP_TRAMPOLINE_ADDRESS:#010x}",
         "dsp_trampoline_words": dsp_metadata["word_count"],
         "arm_common_address": f"{DISTORTION_ARM_COMMON:#010x}",
-        "arm_common_length": len(arm_common),
+        "arm_code_length": len(build_distortion_arm_common_code()),
+        "arm_slot_length": len(arm_common),
+        "arm_padding_length": len(arm_common) - len(build_distortion_arm_common_code()),
         "arm_end": f"{arm_end:#010x}",
-        "drum_3_4_storage": "packed fields in proven-stable DSP Y:$010B",
+        "state_storage": "four independent DSP X-memory words X:$1E65..$1E68",
+        "collision_repair": (
+            "moved selectors out of live Synth 1 voice state Y:$0109..$010B"
+        ),
+        "hardware_validation": (
+            "all four independent states, Synth 1 patch changes, normal amount, "
+            "Scale Follow, Sample Start, and cold boot passed"
+        ),
         "hooks": hooks,
     }
 
@@ -921,7 +913,7 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
         raise ValueError("Scale Follow stage does not match the hardware-tested release")
     distortion = apply_distortion_selector(image)
     if sha256(image) != DISTORTION_IMAGE_SHA256:
-        raise ValueError("distortion stage does not match the hardware-tested 0.3.0 release")
+        raise ValueError("distortion stage does not match the hardware-tested release")
     final_image, sample_start = apply_sample_start_control(bytes(image))
     image = bytearray(final_image)
     if sha256(image) != PATCHED_IMAGE_SHA256:

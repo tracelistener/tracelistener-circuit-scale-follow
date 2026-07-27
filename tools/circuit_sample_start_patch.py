@@ -1,8 +1,8 @@
 """Verified Shift+Macro 3/4 sample-start stage for original Circuit 3592.
 
-This stage accepts only the exact Scale Follow + Drum Distortion Select 0.3.0
-image.  It keeps normal decay intact and applies a per-drum sample displacement
-only when a new voice is triggered.
+This stage accepts only the exact Scale Follow + isolated Drum Distortion
+Select image.  It keeps normal decay intact and applies a per-drum sample
+displacement only when a new voice is triggered.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from keystone import KS_ARCH_ARM, KS_MODE_LITTLE_ENDIAN, KS_MODE_THUMB, Ks
 
 BASE = 0x08008000
 IMAGE_SIZE = 0x2EB80
-INPUT_IMAGE_SHA256 = "0198d2dd35853dbfeb35d1aff64d96736f71f193f1e02701f79cea2054122a75"
-OUTPUT_IMAGE_SHA256 = "3beef4e206920e7f54bbf9c0f3c86e5a7098d5e4948f759cc18f30920884ae06"
+INPUT_IMAGE_SHA256 = "8417a464ad5f6d5ac33e4b345a013ba016583221772a625b208710392ce9856b"
+OUTPUT_IMAGE_SHA256 = "e6a2b77bea0918e28b2cdadca6bef96654d6a39d7272b3a1f9ac25a51815cca2"
 
 STOCK_DRUM_CONTROL_GETTER = 0x0800D8E4
 STOCK_BUTTON_PRESSED = 0x0800C5A8

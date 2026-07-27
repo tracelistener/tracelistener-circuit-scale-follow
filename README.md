@@ -3,7 +3,7 @@
 Scale-quantized drum pitching, selectable distortion algorithms, and per-drum
 sample-start control for the **original Novation Circuit**.
 
-Circuit Scale Follow changes each Drum Pitch control into a four-octave musical range. The selected master root and scale determine the available notes, so drum samples can be played melodically without hunting for semitones. Version 0.3.0 exposed all seven distortion algorithms already present in the Circuit DSP. Version 0.4.0 adds independent sample-start control for all four drums.
+Circuit Scale Follow changes each Drum Pitch control into a four-octave musical range. The selected master root and scale determine the available notes, so drum samples can be played melodically without hunting for semitones. Version 0.3.0 exposed all seven distortion algorithms already present in the Circuit DSP. Version 0.4.0 added independent sample-start control for all four drums. Version 0.4.2 isolates distortion state from Synth 1 patch data.
 
 ## Compatibility
 
@@ -97,17 +97,17 @@ Successful builds are written under `build/circuit-scale-follow/`. The important
 - `circuit-3592-stock-recovery.syx` — untouched recovery copy of your input
 - `circuit-3592-scale-follow-distortion-sample-start-manifest.json` — exact patch sites and checksums
 
-The deterministic combined version 0.4.0 SysEx SHA-256 is:
+The deterministic combined version 0.4.2 SysEx SHA-256 is:
 
 ```text
-0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95
+0cfdbeb08c13f1b5d97276ee02d3cad91d3ec514f689a06ba7745bc773fe4c9f
 ```
 
 ## Verify it
 
 The builder first checks the exact stock image, ARM and DSP code-cave signatures, every changed-byte boundary, MIDI-safe payload encoding, and all 24,576 combinations of 16 scales × 12 roots × 128 input values.
 
-The separate verifier emulates the inserted Thumb code and its integration hooks. It covers cold boot, toggle state, all four live callbacks, all four reload paths, root and scale commits, refresh scheduling, and stock behavior while disabled.
+The separate verifier emulates the inserted Thumb code and its integration hooks. It covers cold boot, toggle state, all four live callbacks, all four reload paths, root and scale commits, refresh scheduling, stock behavior while disabled, four independent distortion-type words, repeated and reversed selector events, and the Synth 1 patch-state collision regression.
 
 ## Install it
 
@@ -117,7 +117,7 @@ The included sender is dry-run by default and requires the exact file hash befor
 
 ```powershell
 python tools\send_circuit_firmware.py --list
-python tools\send_circuit_firmware.py build\circuit-scale-follow\circuit-3592-scale-follow-distortion-sample-start.syx --port "YOUR MIDI PORT" --send --confirm-hash 0dbe6176965d0a96b74c6a41ad0c76aa8e8d52a09a875422e86d86e338fd4e95 --interval-ms 22 --no-monitor
+python tools\send_circuit_firmware.py build\circuit-scale-follow\circuit-3592-scale-follow-distortion-sample-start.syx --port "YOUR MIDI PORT" --send --confirm-hash 0cfdbeb08c13f1b5d97276ee02d3cad91d3ec514f689a06ba7745bc773fe4c9f --interval-ms 22 --no-monitor
 ```
 
 To enter the original Circuit bootloader, turn the unit off, then hold **Scales + Note + Velocity** while powering on. Novation documents the same recovery procedure in its [official firmware-update support article](https://support.novationmusic.com/hc/en-gb/articles/360002211360-Updating-firmware-using-Novation-Components).
@@ -128,7 +128,7 @@ If anything goes wrong, keep the Circuit powered and send the generated `circuit
 
 The patch keeps the stored 0–127 Drum Pitch value and automation data untouched. It remaps the value only when firmware reads it for the DSP. Small hooks cover both the live parameter callbacks and pattern/session reload getters. Two unused alignment bytes beside the stock parameter map hold the mode, selected scale, initialization flag, and root; stock callback pointers are not replaced.
 
-The distortion extension redirects the stock DSP distortion call through a compact 56k trampoline. Drum 1 and 2 selectors use stable DSP Y-memory words; Drum 3 and 4 occupy separate packed fields in the hardware-tested Y:$010B word. The ARM wrapper restores the original amount byte before returning, so Shift movement selects a type without changing distortion depth.
+The distortion extension redirects the stock DSP distortion call through a compact 56k trampoline. Each drum has an independent selector word in verified-unused DSP X memory at X:$1E65–$1E68. Version 0.4.2 moved these words out of Y:$0109–$010B after confirming that stock Synth 1 voices consume that region and patch changes overwrite it. The ARM wrapper restores the original amount byte before returning, so Shift movement selects a type without changing distortion depth.
 
 The sample-start extension reads the stock sample descriptor at trigger time, advances its base address by the selected proportional displacement, and reduces the remaining boundary by the same amount. Per-drum offset, displacement, and encoder state live in verified-unused DSP X-memory. The normal decay byte is restored before the callback returns.
 
