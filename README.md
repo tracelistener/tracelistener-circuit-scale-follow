@@ -20,7 +20,7 @@ Download the latest `CircuitScaleFollowTool` package from [GitHub Releases](http
 
 The tool does **not** contain Novation firmware. Choose your legitimate stock `circuit-firmware-3592.syx`, click **Validate and Build Firmware**, put the original Circuit in bootloader mode, select the correct MIDI output, and click **Upload Verified Firmware**. A stock recovery copy is always created before upload is enabled.
 
-After a successful upload, allow the Circuit to finish restarting, then perform one complete cold power cycle: turn it off and remove USB, MIDI, external power, and batteries (if fitted) for 10 seconds before starting normally. The bootloader uses a warm restart that can retain the previous Scale Follow RAM state; the cold boot guarantees default-on initialization.
+After a successful upload, allow the Circuit to finish restarting before disconnecting anything.
 
 See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum instructions. Novation Components cannot import a custom firmware file; its local SysEx importer is for patches and banks. Use the included guarded uploader for this mod.
 
@@ -79,7 +79,7 @@ controls into the drum automation lanes.
 SHA-256  58531a08d2e52b5c64ce2cba88441819c18d9459d38a35202de621ae205faee0
 ```
 
-Flash with the included uploader, then cold power cycle:
+Flash with the included uploader:
 
 ```
 python tools/send_circuit_firmware.py experimental/circuit-3592-filter-lfo-shift-automation.syx --port "Bootloader" --send --confirm-hash 58531a08d2e52b5c64ce2cba88441819c18d9459d38a35202de621ae205faee0 --interval-ms 30

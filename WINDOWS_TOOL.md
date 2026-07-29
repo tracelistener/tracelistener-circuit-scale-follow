@@ -63,7 +63,6 @@ Upload remains disabled unless that exact result is produced.
 5. Read the final confirmation carefully and begin the transfer.
 6. Do not touch power, USB, or MIDI cables for approximately 2¼ minutes.
 7. Wait for the Circuit to finish or restart before disconnecting anything.
-8. Turn it off and remove USB, MIDI, external power, and batteries (if fitted) for 10 seconds, then start normally. This one-time cold boot clears RAM retained by the bootloader restart so Scale Follow initializes on.
 
 Scale Follow is on after boot. Hold **Shift** and press **Scales** to toggle it. For ordinary root/scale selection, enter the normal **Scales** view and choose the new setting; Scales does not need to remain held.
 
