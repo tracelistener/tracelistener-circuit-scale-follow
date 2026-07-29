@@ -24,6 +24,39 @@ After a successful upload, allow the Circuit to finish restarting before disconn
 
 See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum instructions. Novation Components cannot import a custom firmware file; its local SysEx importer is for patches and banks. Use the included guarded uploader for this mod.
 
+## If the Windows upload fails
+
+Some machines report this partway into the first message:
+
+```
+Uploading message 1 of 5981...
+Transfer failed: MidiOutWinMM::sendMessage: error sending sysex message
+```
+
+Failing on **message 1**, before any data moves, means the port opened but the first
+write was rejected. That is a port-access problem, not a firmware problem -- which is why
+Stock Recovery fails the same way while Novation Components still works.
+
+**Most often another program is holding the MIDI port.** Windows will not share it. Fully
+quit Novation Components, including any browser tab and any background or tray process,
+close every DAW and MIDI utility, unplug and replug the Circuit, re-enter bootloader mode,
+and try again without launching anything else first.
+
+If that does not help, use the alternate uploader:
+
+```
+python tools/send_circuit_firmware_winmm.py --list
+python tools/send_circuit_firmware_winmm.py firmware.syx --port "Bootloader" --send --confirm-hash <sha256>
+```
+
+[`send_circuit_firmware_winmm.py`](tools/send_circuit_firmware_winmm.py) drives `winmm.dll`
+directly through ctypes instead of going through python-rtmidi, so it is a different code
+path and needs no dependencies at all -- a stock Python install is enough, with no rtmidi
+and no pip. Where the other tools print one generic string, this one reports the real
+Windows error code, so `MMSYSERR_ALLOCATED` names the port conflict outright. It also waits
+briefly after opening the port before the first message and retries a failed message, both
+of which some drivers need.
+
 ## Scale Follow
 
 - Scale Follow is on by default after every boot.
