@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Circuit Firmware Uploader</title>
+<style>
+  :root {
+    --bg: #12131a; --panel: #1b1d27; --line: #2c2f3d;
+    --ink: #e9eaf0; --dim: #9aa0b4;
+    --go: #7ee787; --warn: #ffb86b; --bad: #ff7b72; --accent: #79c0ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  .sub { color: var(--dim); margin: 0 0 2rem; }
+  .step {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 1.15rem 1.25rem; margin-bottom: 1rem;
+  }
+  .step[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+  .step h2 {
+    font-size: .82rem; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 0 0 .75rem; font-weight: 600;
+  }
+  button {
+    font: inherit; font-weight: 600; color: #0d1117; background: var(--accent);
+    border: 0; border-radius: 8px; padding: .6rem 1.1rem; cursor: pointer;
+  }
+  button:disabled { background: #39404f; color: #7d8595; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  select, input[type=file] { font: inherit; color: var(--ink); background: #12141c;
+    border: 1px solid var(--line); border-radius: 8px; padding: .55rem .6rem; width: 100%; }
+  .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+  code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .85em; }
+  .hash { color: var(--dim); word-break: break-all; }
+  #bar { height: 8px; background: #12141c; border-radius: 99px; overflow: hidden; margin: .8rem 0 .4rem; }
+  #fill { height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+  #status { min-height: 1.6em; }
+  .ok { color: var(--go); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .note { color: var(--dim); font-size: .9rem; }
+  ul { margin: .4rem 0 0; padding-left: 1.1rem; } li { margin: .2rem 0; }
+  .danger { border-color: #5a2a2a; background: #24181b; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Circuit Firmware Uploader</h1>
+  <p class="sub">Runs in your browser. Nothing to install.</p>
+
+  <div class="step danger">
+    <h2>Before you start</h2>
+    <ul>
+      <li><strong>Close Novation Components</strong> and any music software. Windows will not let two programs use the Circuit at once — this is the most common cause of failure.</li>
+      <li>Connect the Circuit by USB directly to the computer, not through a hub.</li>
+      <li>Put it in <strong>bootloader mode</strong>: turn it off, then hold <strong>Scales + Note + Velocity</strong> while turning it on.</li>
+      <li>Use <strong>Chrome</strong> or <strong>Edge</strong>. Firefox and Safari cannot send firmware.</li>
+    </ul>
+  </div>
+
+  <div class="step" id="s1">
+    <h2>Step 1 — Connect</h2>
+    <div class="row">
+      <button id="connect">Allow MIDI access</button>
+      <span id="midiStatus" class="note">Not connected yet.</span>
+    </div>
+  </div>
+
+  <div class="step" id="s2" aria-disabled="true">
+    <h2>Step 2 — Choose the Circuit</h2>
+    <select id="ports"><option>No devices found</option></select>
+    <p class="note" id="portHint">Look for a name containing “Bootloader”.</p>
+  </div>
+
+  <div class="step" id="s3" aria-disabled="true">
+    <h2>Step 3 — Choose the firmware file</h2>
+    <input type="file" id="file" accept=".syx">
+    <p class="note" id="fileInfo">Select a <code>.syx</code> firmware file.</p>
+    <p class="note hash mono" id="fileHash"></p>
+  </div>
+
+  <div class="step" id="s4" aria-disabled="true">
+    <h2>Step 4 — Upload</h2>
+    <div class="row">
+      <button id="send">Start upload</button>
+      <button id="cancel" class="ghost" disabled>Cancel</button>
+    </div>
+    <div id="bar"><div id="fill"></div></div>
+    <div id="status" class="note">Ready.</div>
+    <p class="note">Takes about 3 minutes. <strong>Do not unplug anything</strong> or close this tab until it finishes.</p>
+  </div>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = id => document.getElementById(id);
+  const state = { access: null, output: null, messages: null, cancel: false };
+
+  const enable = (el, on) => el.setAttribute("aria-disabled", on ? "false" : "true");
+  const say = (msg, cls = "") => { $("status").className = "note " + cls; $("status").textContent = msg; };
+
+  if (!navigator.requestMIDIAccess) {
+    $("midiStatus").innerHTML = '<span class="bad">This browser cannot send MIDI. Please use Chrome or Edge.</span>';
+    $("connect").disabled = true;
+  }
+
+  $("connect").onclick = async () => {
+    try {
+      state.access = await navigator.requestMIDIAccess({ sysex: true });
+    } catch (err) {
+      $("midiStatus").innerHTML = '<span class="bad">Permission denied. Reload and choose Allow.</span>';
+      return;
+    }
+    state.access.onstatechange = refreshPorts;
+    refreshPorts();
+    enable($("s2"), true);
+  };
+
+  function refreshPorts() {
+    const sel = $("ports");
+    sel.innerHTML = "";
+    const outs = [...state.access.outputs.values()];
+    if (!outs.length) {
+      sel.innerHTML = "<option>No MIDI devices found</option>";
+      $("midiStatus").innerHTML = '<span class="warn">Connected, but no MIDI devices found.</span>';
+      $("portHint").innerHTML = 'Check the Circuit is on, in bootloader mode, and plugged in directly.';
+      return;
+    }
+    outs.forEach((o, i) => {
+      const opt = document.createElement("option");
+      opt.value = o.id;
+      opt.textContent = o.name;
+      sel.appendChild(opt);
+      if (/bootloader/i.test(o.name)) sel.value = o.id;
+    });
+    $("midiStatus").innerHTML = '<span class="ok">Connected.</span>';
+    const auto = outs.find(o => /bootloader/i.test(o.name));
+    $("portHint").innerHTML = auto
+      ? '<span class="ok">Found “' + auto.name + '” and selected it for you.</span>'
+      : '<span class="warn">No “Bootloader” device listed — the Circuit may not be in bootloader mode.</span>';
+    pick();
+  }
+
+  $("ports").onchange = pick;
+  function pick() {
+    state.output = state.access.outputs.get($("ports").value) || null;
+    enable($("s3"), !!state.output);
+    checkReady();
+  }
+
+  $("file").onchange = async () => {
+    const f = $("file").files[0];
+    if (!f) return;
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const msgs = split(buf);
+    if (!msgs.length) {
+      $("fileInfo").innerHTML = '<span class="bad">That file contains no MIDI firmware data.</span>';
+      state.messages = null; checkReady(); return;
+    }
+    state.messages = msgs;
+    $("fileInfo").innerHTML = '<span class="ok">' + f.name + ' — ' + msgs.length.toLocaleString() + ' messages.</span>';
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    $("fileHash").textContent = "SHA-256 " + [...new Uint8Array(digest)]
+      .map(b => b.toString(16).padStart(2, "0")).join("");
+    checkReady();
+  };
+
+  function split(bytes) {
+    const out = []; let start = -1;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0xF0) start = i;
+      else if (bytes[i] === 0xF7 && start >= 0) { out.push(bytes.subarray(start, i + 1)); start = -1; }
+    }
+    return out;
+  }
+
+  function checkReady() { enable($("s4"), !!(state.output && state.messages)); }
+
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  $("cancel").onclick = () => { state.cancel = true; };
+
+  $("send").onclick = async () => {
+    if (!state.output || !state.messages) return;
+    if (!confirm("Upload firmware to “" + state.output.name + "”?\n\nDo not unplug anything until it finishes.")) return;
+
+    state.cancel = false;
+    $("send").disabled = true; $("cancel").disabled = false; $("file").disabled = true;
+    const total = state.messages.length;
+
+    try {
+      await sleep(250); // let the port settle before the first message
+      for (let i = 0; i < total; i++) {
+        if (state.cancel) throw new Error("Cancelled. The Circuit may be in an incomplete state — upload again before using it.");
+        state.output.send(state.messages[i]);
+        if (i % 25 === 0 || i === total - 1) {
+          $("fill").style.width = ((i + 1) / total * 100) + "%";
+          say("Sending " + (i + 1).toLocaleString() + " of " + total.toLocaleString() + "…");
+        }
+        await sleep(30);
+      }
+      $("fill").style.width = "100%";
+      say("Upload complete. Let the Circuit finish restarting.", "ok");
+    } catch (err) {
+      const msg = String(err && err.message || err);
+      say("Failed: " + msg, "bad");
+      if (/InvalidAccess|NotAllowed/i.test(msg)) {
+        say("Failed: the browser blocked firmware data. Reload and choose Allow when asked.", "bad");
+      } else if (/InvalidState|closed/i.test(msg)) {
+        say("Failed: the Circuit disconnected. Check the cable, re-enter bootloader mode, and try again.", "bad");
+      }
+    } finally {
+      $("send").disabled = false; $("cancel").disabled = true; $("file").disabled = false;
+    }
+  };
+})();
+</script>
+</body>
+</html>

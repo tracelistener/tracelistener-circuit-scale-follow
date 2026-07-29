@@ -24,6 +24,20 @@ After a successful upload, allow the Circuit to finish restarting before disconn
 
 See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum instructions. Novation Components cannot import a custom firmware file; its local SysEx importer is for patches and banks. Use the included guarded uploader for this mod.
 
+## Upload from your browser (easiest, nothing to install)
+
+**[Open the browser uploader](https://tracelistener.github.io/tracelistener-circuit-scale-follow/)**
+
+Works in Chrome or Edge on Windows and macOS. No Python, no download, no install. It walks
+through four steps: allow MIDI access, pick the Circuit, choose the `.syx` file, upload.
+It finds the bootloader port for you, shows the file's SHA-256, and reports progress.
+
+Before starting, **close Novation Components and any music software** -- only one program at
+a time may use the Circuit, and this is the most common cause of a failed upload. Put the
+Circuit in bootloader mode by holding **Scales + Note + Velocity** while turning it on.
+
+Firefox and Safari cannot send firmware; they do not implement the necessary MIDI support.
+
 ## If the Windows upload fails
 
 Some machines report this partway into the first message:
