@@ -63,6 +63,83 @@ See [WINDOWS_TOOL.md](WINDOWS_TOOL.md) for the complete walkthrough and checksum
 
 The modification changes firmware behavior only. It does not contain or replace samples, sessions, packs, or factory patterns.
 
+## Experimental: Drum Filter LFO + hidden Shift automation
+
+> **Status: experimental, not part of a release.** Not included in the Windows tool and no
+> released hash changes. Keep a stock recovery SysEx to hand before flashing.
+
+A per-drum LFO on the drum filter cutoff, plus recording and playback of the hidden Shift
+controls into the drum automation lanes.
+
+### Download
+
+[`experimental/circuit-3592-filter-lfo-shift-automation.syx`](experimental/circuit-3592-filter-lfo-shift-automation.syx)
+
+```
+SHA-256  58531a08d2e52b5c64ce2cba88441819c18d9459d38a35202de621ae205faee0
+```
+
+Flash with the included uploader, then cold power cycle:
+
+```
+python tools/send_circuit_firmware.py experimental/circuit-3592-filter-lfo-shift-automation.syx --port "Bootloader" --send --confirm-hash 58531a08d2e52b5c64ce2cba88441819c18d9459d38a35202de621ae205faee0 --interval-ms 30
+```
+
+You can also rebuild it yourself from your own stock SysEx with the scripts in
+[`experimental/`](experimental/), which is the better route if you want to modify it:
+
+```
+python experimental/build_circuit_shift_automation.py path/to/circuit-firmware-3592.syx
+python experimental/verify_circuit_shift_automation.py
+```
+
+### What works
+
+- **Per-drum filter LFO.** Shift + Macro 7/8 selects Off or one of eight speeds: four
+  triangle, four sawtooth. It sweeps the filter cutoff over 0x-2x of a centre point, wide
+  enough to be clearly audible on snare and kick.
+- **Independent centre and speed.** Setting the centre frequency and the LFO rate do not
+  interfere with each other.
+- **Usable encoder range.** A step divider makes the LFO positions take a deliberate twist,
+  which matters because the Circuit's encoders are continuous and unmarked.
+- **Shift-macro automation recording and playback** into the stock drum automation lanes.
+- **Normal automation and Clear automation** behave as stock.
+- **Automation clears on session change.**
+
+### What does not work
+
+- **Clear does not reset a hidden setting.** Holding Clear and moving Macro 7/8 should switch
+  that drum's LFO off. It does not. The reset code is present and correct, but the Clear
+  button's logical ID is unidentified: `0x19` reads as permanently held, `0x1A` as never held,
+  and `0x0F` and `0x1C` were both tried without effect. The modifier-ID probe returns a
+  not-found result that is easy to misread as a valid answer, so treat any ID claim as
+  unproven until it works on hardware.
+- **Recorded Shift-macro gestures need the macro nudged afterwards** before playback is
+  audible. Whether the recorder samples state before or after the hidden wrapper updates it
+  is a runtime property that has not been pinned down.
+- **Hidden settings persist across session changes.** The LFO, distortion type and sample
+  start live in DSP memory rather than in the session, so they are not session-scoped.
+
+### Notes for anyone building on this
+
+- The image is a fixed size and must not grow. Every addition fits in an existing gap.
+- **A zero-filled or nop-filled run is not proof a slot is free.** A 92-byte zero-filled run
+  at `0x08032EB0` bricks the unit if code is placed there, even with nothing hooked and
+  nothing called. Check for stored pointers into a slot and for literal pools landing inside
+  it, then flash an isolation image that only *places* code and hooks nothing.
+- **Bisect by placement, not by logic.** Nine builds were lost to that slot while every code
+  review passed, because the code was fine and the address was not. Four
+  place-one-thing-per-image flashes found it exactly.
+- Never call the DSP accessors from the sequencer-tick path; it is a clock callback.
+- Do not hand-derive DSP56300 encodings. Confirm them with a disassembler.
+- Flash one layer at a time and confirm on hardware before adding the next.
+
+### About this file
+
+Unlike the rest of this repository, which ships only a builder, the SysEx above is a prebuilt
+patched image: Novation's firmware 3592 with the modifications described here applied to it.
+It is provided for owners of the original hardware to use on their own device.
+
 ## Build it
 
 Requirements: Python 3.10 or newer and a legitimate copy of the original Circuit 1.8 build 3592 firmware update SysEx.
