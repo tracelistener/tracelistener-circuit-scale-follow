@@ -26,7 +26,7 @@ from circuit_scale_follow import self_test as mapping_self_test
 from send_circuit_firmware import find_port, validate_firmware
 
 
-APP_NAME = "Circuit Scale Follow Tool"
+APP_NAME = "Circuit Extended Firmware Tool"
 TRANSFER_INTERVAL_SECONDS = 0.022
 
 
@@ -136,7 +136,7 @@ class CircuitToolApp:
 
         ttk.Label(
             outer,
-            text="Circuit Scale Follow",
+            text="Circuit Extended Firmware",
             font=("Segoe UI", 18, "bold"),
         ).pack(anchor="w")
         ttk.Label(

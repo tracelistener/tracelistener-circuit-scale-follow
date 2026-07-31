@@ -920,7 +920,7 @@ def build_image(stock: bytes) -> tuple[bytes, dict]:
         raise ValueError("combined image does not match the hardware-tested release")
 
     manifest = {
-        "project": "Circuit Scale Follow + Drum Distortion Select + Sample Start",
+        "project": "Circuit Extended Firmware",
         "release": RELEASE_VERSION,
         "target": "original Novation Circuit firmware 1.8 build 3592",
         "base": f"{BASE:#010x}",

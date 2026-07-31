@@ -1,6 +1,6 @@
 # Windows one-click tool
 
-`CircuitScaleFollowTool.exe` builds and uploads Circuit Scale Follow, Drum Distortion Select, and Drum Sample Start without requiring Python. It contains the patcher and MIDI sender, but **no Novation firmware**.
+`CircuitScaleFollowTool.exe` is the legacy Windows builder for Circuit Extended Firmware. It contains the patcher and MIDI sender, but **no Novation firmware**.
 
 ## Before starting
 
