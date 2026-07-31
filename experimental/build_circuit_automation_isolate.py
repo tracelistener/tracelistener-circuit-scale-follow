@@ -23,7 +23,7 @@ ANALYSIS_DIR = Path(__file__).resolve().parent
 ROOT = ANALYSIS_DIR.parent
 sys.path.insert(0, str(ANALYSIS_DIR / "keystone_lib"))
 sys.path.insert(0, str(ANALYSIS_DIR))
-sys.path.insert(0, str(ROOT / "github_publish" / "tracelistener-circuit-scale-follow" / "tools"))
+sys.path.insert(0, str(ROOT / "tools"))
 sys.stdout.reconfigure(encoding="utf-8")
 
 import build_circuit_scale_follow as release

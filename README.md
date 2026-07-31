@@ -1,8 +1,8 @@
-# Circuit Scale Follow
+# Circuit Extended Firmware
 
 Hardware-validated custom firmware for the **original Novation Circuit**, firmware 1.8 build 3592.
 
-## [Open the browser uploader](https://tracelistener.github.io/tracelistener-circuit-scale-follow/)
+## [Open the browser uploader](https://tracelistener.github.io/tracelistener-circuit-extended/)
 
 Use Chrome or Edge. The page loads and verifies the firmware automatically—no Python, command line, or Novation Components import is required.
 

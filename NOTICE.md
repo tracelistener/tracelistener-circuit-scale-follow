@@ -1,6 +1,6 @@
 # Notice
 
-Circuit Scale Follow is an independent community firmware-patching project for the original Novation Circuit.
+Circuit Extended Firmware is an independent community firmware-patching project for the original Novation Circuit.
 
 The browser uploader includes one prebuilt patched firmware update for owners of the supported original Circuit. Novation firmware remains third-party material and is not covered by this project's MIT license. The source builders still require a user-supplied legitimate stock update and verify it by SHA-256.
 
