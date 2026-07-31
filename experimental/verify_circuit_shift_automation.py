@@ -2,7 +2,7 @@
 
 Run from the repository root:
 
-    python analysis\\verify_circuit_shift_automation.py
+    python experimental\\verify_circuit_shift_automation.py
 
 Emulates the shared playback decoder against the real patched image and checks
 that untagged automation is bit-for-bit stock while tagged automation applies
@@ -11,13 +11,14 @@ hidden state without ever reaching the stock parameter dispatcher.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
 
 ANALYSIS_DIR = Path(__file__).resolve().parent
 ROOT = ANALYSIS_DIR.parent
-PUBLISHED_TOOLS = ROOT / "github_publish" / "tracelistener-circuit-scale-follow" / "tools"
+PUBLISHED_TOOLS = ROOT / "tools"
 
 sys.path.insert(0, str(ANALYSIS_DIR / "unicorn_lib"))
 sys.path.insert(0, str(ANALYSIS_DIR / "capstone_local"))
@@ -26,6 +27,7 @@ sys.path.insert(0, str(ANALYSIS_DIR))
 sys.path.insert(0, str(PUBLISHED_TOOLS))
 sys.stdout.reconfigure(encoding="utf-8")
 
+from capstone import CS_ARCH_ARM, CS_MODE_LITTLE_ENDIAN, CS_MODE_THUMB, Cs
 from unicorn import UC_ARCH_ARM, UC_HOOK_CODE, UC_MODE_THUMB, Uc
 from unicorn.arm_const import (
     UC_ARM_REG_LR,
@@ -46,7 +48,6 @@ import circuit_shift_automation_patch as mod
 import circuit_filter_lfo_patch as lfo
 from circuit_fw_tools import decode_firmware, encode_firmware, load
 
-STOCK_SYSEX = Path(r"C:\Users\admin\AI-Projects\circuit-firmware-3592.syx")
 V042_IMAGE = "e6a2b77bea0918e28b2cdadca6bef96654d6a39d7272b3a1f9ac25a51815cca2"
 
 FLASH_BASE = 0x08000000
@@ -227,16 +228,125 @@ class RecordEmulator:
         }
 
 
+class FilterWrapperEmulator:
+    """Drive the live Filter callback, including active-low Clear handling."""
+
+    SENTINEL = 0x08007200
+
+    def __init__(
+        self,
+        image: bytes,
+        *,
+        proposed: int,
+        shift_held: bool = False,
+        clear_held: bool = False,
+    ):
+        self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+        self.uc.mem_map(FLASH_BASE, FLASH_SIZE)
+        self.uc.mem_write(release.BASE, image)
+        self.uc.mem_map(RAM_BASE, RAM_SIZE)
+        self.proposed = proposed
+        self.shift_held = shift_held
+        self.clear_held = clear_held
+        self.dsp: dict[int, int] = {}
+        self.setter_calls: list[tuple[int, int]] = []
+        self.button_calls: list[tuple[int, int]] = []
+        self.uc.hook_add(UC_HOOK_CODE, self._hook)
+
+    @staticmethod
+    def _return(uc: Uc) -> None:
+        uc.reg_write(UC_ARM_REG_PC, uc.reg_read(UC_ARM_REG_LR))
+
+    def _hook(self, uc: Uc, address: int, size: int, _: object) -> None:
+        if address == self.SENTINEL:
+            uc.emu_stop()
+            return
+        if address == mod.STOCK_DRUM_CONTROL_GETTER:
+            uc.reg_write(UC_ARM_REG_R0, self.proposed)
+            uc.reg_write(UC_ARM_REG_R1, 0xDEADCA01)
+            uc.reg_write(UC_ARM_REG_R2, 0xDEADCA02)
+            uc.reg_write(UC_ARM_REG_R3, 0xDEADCA03)
+            self._return(uc)
+            return
+        if address == mod.STOCK_BUTTON_PRESSED:
+            logical_id = uc.reg_read(UC_ARM_REG_R0) & 0xFF
+            if logical_id == mod.SHIFT_LOGICAL_ID:
+                result = int(self.shift_held)
+            elif logical_id == mod.CLEAR_LOGICAL_ID:
+                # Clear's stock scan bit is active-low: high at rest, low held.
+                result = int(not self.clear_held)
+            else:
+                raise ValueError(f"unexpected logical button query {logical_id:#x}")
+            self.button_calls.append((logical_id, result))
+            uc.reg_write(UC_ARM_REG_R0, result)
+            uc.reg_write(UC_ARM_REG_R1, 0xDEADCB01)
+            uc.reg_write(UC_ARM_REG_R2, 0xDEADCB02)
+            uc.reg_write(UC_ARM_REG_R3, 0xDEADCB03)
+            self._return(uc)
+            return
+        if address == mod.DSP_GETTER:
+            register = uc.reg_read(UC_ARM_REG_R0) & 0xFFFF
+            uc.reg_write(UC_ARM_REG_R0, self.dsp.get(register, 0))
+            uc.reg_write(UC_ARM_REG_R1, 0xDEADCC01)
+            uc.reg_write(UC_ARM_REG_R2, 0xDEADCC02)
+            uc.reg_write(UC_ARM_REG_R3, 0xDEADCC03)
+            self._return(uc)
+            return
+        if address == mod.DSP_SETTER:
+            register = uc.reg_read(UC_ARM_REG_R1) & 0xFFFF
+            value = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            self.dsp[register] = value
+            self.setter_calls.append((register, value))
+            uc.reg_write(UC_ARM_REG_R0, 0xDEADCD00)
+            uc.reg_write(UC_ARM_REG_R1, 0xDEADCD01)
+            uc.reg_write(UC_ARM_REG_R2, 0xDEADCD02)
+            uc.reg_write(UC_ARM_REG_R3, 0xDEADCD03)
+            self._return(uc)
+
+    def run(self, drum: int) -> int:
+        hook = lfo.FILTER_HOOKS[drum]
+        preserved = {
+            UC_ARM_REG_R1: hook.parameter_id,
+            UC_ARM_REG_R3: 0x33333333,
+            UC_ARM_REG_R4: 0x44444444,
+            UC_ARM_REG_R5: 0x55555555,
+            UC_ARM_REG_R6: 0x66666666,
+            UC_ARM_REG_R7: 0x77777777,
+        }
+        self.uc.reg_write(UC_ARM_REG_R0, 0x10)
+        self.uc.reg_write(UC_ARM_REG_R2, 0x22222222)
+        for register, value in preserved.items():
+            self.uc.reg_write(register, value)
+        self.uc.reg_write(UC_ARM_REG_SP, STACK)
+        self.uc.reg_write(UC_ARM_REG_LR, self.SENTINEL | 1)
+        self.uc.emu_start(
+            (mod.ARM_LFO_ENTRIES + drum * 4) | 1,
+            self.SENTINEL,
+            count=4000,
+        )
+        for register, expected in preserved.items():
+            if self.uc.reg_read(register) != expected:
+                raise ValueError(f"Filter wrapper clobbered register {register}")
+        return self.uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+
+
 def record_checks(patched: bytes) -> dict[str, object]:
     results: dict[str, object] = {}
     untouched = 0x5A
 
-    def run(parameter_id: int, *, shift: bool, mode: int = 0, dsp: dict[int, int] | None = None):
+    def run(
+        parameter_id: int,
+        *,
+        shift: bool,
+        mode: int = 0,
+        value: int = untouched,
+        dsp: dict[int, int] | None = None,
+    ):
         emu = RecordEmulator(
             patched,
             parameter_id=parameter_id,
             mode=mode,
-            value=untouched,
+            value=value,
             shift_held=shift,
         )
         if dsp:
@@ -290,7 +400,7 @@ def record_checks(patched: bytes) -> dict[str, object]:
                 raise ValueError(f"distortion drum {drum} type {kind} tagged {out['r6']:#04x}")
     results["distortion_tags"] = "4 drums, 0..6 kept, out-of-range recorded as Off"
 
-    # Filter LFO: Off or 12..15; the packed centre must not leak into the tag.
+    # Filter LFO: Off or 12..19; the packed centre must not leak into the tag.
     centre = 0x3F0040
     for drum in range(4):
         for packed_mode, expect in ((0, 0), (11, 0), (12, 12), (15, 15), (16, 16), (19, 19), (20, 0)):
@@ -305,6 +415,55 @@ def record_checks(patched: bytes) -> dict[str, object]:
                     f"expected {0x80 | expect:#04x}"
                 )
     results["filter_tags"] = "4 drums, Off/12..19 kept, out-of-range recorded as Off"
+
+    # The hardware-observed callback order is recorder first, Filter wrapper
+    # second.  Exercise the predictor against the wrapper's exact transition:
+    # the first two encoder events retain the current mode, the third advances
+    # or retreats, and equal-to-baseline events never move it.
+    def amount_word(baseline: int) -> int:
+        return ((baseline - 64) << 25) & 0xFFFFFFFF
+
+    transition_cases = (
+        # current, event, baseline, expected after a passing divider event
+        (0, 70, 64, 12),
+        (12, 70, 64, 13),
+        (18, 70, 64, 19),
+        (19, 70, 64, 19),
+        (0, 58, 64, 0),
+        (12, 58, 64, 0),
+        (13, 58, 64, 12),
+        (19, 58, 64, 18),
+        (15, 64, 64, 15),
+        (11, 70, 64, 12),
+        (20, 58, 64, 0),
+    )
+    predicted = 0
+    for drum in range(4):
+        state_register = lfo.LFO_MODE_REGISTERS[drum]
+        for current, event, baseline, passed_expect in transition_cases:
+            valid_current = current if current == 0 or 12 <= current <= 19 else 0
+            for counter in (0, 1, 2):
+                expect = passed_expect if counter == 2 else valid_current
+                out = run(
+                    filter_id(drum),
+                    shift=True,
+                    value=event,
+                    dsp={
+                        state_register: (0x220000 | current) << 8,
+                        mod.STEP_DIVIDER_STATE + drum: counter << 8,
+                        mod.FILTER_AMOUNT_BASE + drum: amount_word(baseline),
+                    },
+                )
+                if out["r6"] != (0x80 | expect):
+                    raise ValueError(
+                        f"filter predictor drum {drum}, current {current}, "
+                        f"event {event}, counter {counter}: got {out['r6']:#04x}, "
+                        f"expected {0x80 | expect:#04x}"
+                    )
+                predicted += 1
+    results["filter_recorder_first_prediction"] = (
+        f"{predicted} drum/direction/divider transitions match the live wrapper"
+    )
 
     # Every tag must stay inside 0x80..0xFE so 0xFF keeps meaning empty.
     seen: set[int] = set()
@@ -357,6 +516,39 @@ def static_checks(base: bytes, patched: bytes) -> dict[str, object]:
         raise ValueError("image size changed")
     results["size_preserved"] = True
 
+    clear_query = bytes.fromhex(
+        "19 20 02 F0 48 F9 00 28 0C BF 03 20 02 20 00 E0"
+    )
+    clear_query_offset = mod.image_offset(0x0800A312)
+    if base[clear_query_offset : clear_query_offset + len(clear_query)] != clear_query:
+        raise ValueError("stock Clear query contract changed")
+    results["stock_clear_query"] = (
+        "logical ID 0x19; stock code distinguishes raw zero from nonzero"
+    )
+
+    disassembler = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_LITTLE_ENDIAN)
+    branch_count = 0
+    for start, end in (
+        (mod.ARM_LFO_COMMON, mod.ARM_LFO_SECOND_END),
+        (mod.ARM_NORMAL_CENTER, mod.ARM_NORMAL_CENTER_END),
+    ):
+        for instruction in disassembler.disasm(
+            patched[mod.image_offset(start) : mod.image_offset(end)], start
+        ):
+            if not (
+                instruction.mnemonic.startswith("b")
+                and instruction.op_str.startswith("#")
+            ):
+                continue
+            target = int(instruction.op_str[1:], 16)
+            if not FLASH_BASE <= target < FLASH_BASE + FLASH_SIZE:
+                raise ValueError(
+                    f"inserted branch escapes flash at {instruction.address:#010x}: "
+                    f"{target:#010x}"
+                )
+            branch_count += 1
+    results["direct_branch_targets_checked"] = branch_count
+
     # Both playback sites now call the shared decoder.
     for name, address in (
         ("tick", mod.PLAYBACK_TICK_PATCH),
@@ -383,6 +575,11 @@ def static_checks(base: bytes, patched: bytes) -> dict[str, object]:
     results["changed_bytes"] = len(changed)
     results["writes_outside_declared_regions"] = 0
     return results
+
+
+def packed_filter_state(raw: int, mode: int) -> int:
+    coefficient = (lfo.CENTER_COEFFICIENT_MIN + 2 * raw**3) & ~0x3F
+    return coefficient | mode
 
 
 def emulation_checks(patched: bytes) -> dict[str, object]:
@@ -460,6 +657,48 @@ def emulation_checks(patched: bytes) -> dict[str, object]:
             raise ValueError(f"filter drum {drum} empty-centre default wrong: {decoded:#x}")
     results["filter_centre_default"] = "zero centre -> 0x0A0000 (~621 Hz) substituted"
 
+    # 4c. Clear is the stock logical ID 0x19 but its scan bit is active-low.
+    # Only the stock default value (64, the blue-LED clockwise reset) may turn
+    # the hidden LFO off.  Other values must preserve the LFO so the stock
+    # counter-clockwise automation-delete gesture remains independent.
+    clear_results: dict[str, str] = {}
+    for drum in range(4):
+        register = lfo.LFO_MODE_REGISTERS[drum]
+        mode = lfo.LFO_MODE_MIN + drum
+
+        reset = FilterWrapperEmulator(patched, proposed=64, clear_held=True)
+        reset.dsp[register] = packed_filter_state(51 + drum, mode) << 8
+        if reset.run(drum) != 64:
+            raise ValueError(f"Clear reset changed Drum {drum + 1}'s stock return")
+        expected_off = packed_filter_state(64, 0) << 8
+        if reset.dsp.get(register) != expected_off:
+            raise ValueError(f"active-low Clear did not disable Drum {drum + 1}")
+        if reset.button_calls != [
+            (mod.SHIFT_LOGICAL_ID, 0),
+            (mod.CLEAR_LOGICAL_ID, 0),
+        ]:
+            raise ValueError("Clear reset did not observe the active-low scan state")
+
+        rest = FilterWrapperEmulator(patched, proposed=64, clear_held=False)
+        rest.dsp[register] = packed_filter_state(51 + drum, mode) << 8
+        rest.run(drum)
+        expected_active = packed_filter_state(64, mode) << 8
+        if rest.dsp.get(register) != expected_active:
+            raise ValueError("Clear scan high-at-rest incorrectly disabled the LFO")
+        if rest.button_calls[-1] != (mod.CLEAR_LOGICAL_ID, 1):
+            raise ValueError("Clear high-at-rest state was not modelled")
+
+        erase = FilterWrapperEmulator(patched, proposed=32, clear_held=True)
+        erase.dsp[register] = packed_filter_state(51 + drum, mode) << 8
+        erase.run(drum)
+        if erase.dsp.get(register) != packed_filter_state(32, mode) << 8:
+            raise ValueError("non-default Clear movement reset the hidden LFO")
+        if erase.button_calls != [(mod.SHIFT_LOGICAL_ID, 0)]:
+            raise ValueError("Clear was queried outside the stock default-value path")
+
+        clear_results[f"drum_{drum + 1}"] = "value 64 + raw Clear 0 -> Off"
+    results["filter_clear_active_low"] = clear_results
+
     # 5. Sample Start writes both the raw word and a displacement.
     for drum in range(4):
         for value in (0, 1, 63, 126, 127):
@@ -488,7 +727,17 @@ def emulation_checks(patched: bytes) -> dict[str, object]:
 
 
 def main() -> None:
-    stock, messages, original = load(STOCK_SYSEX)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "stock_sysex",
+        type=Path,
+        nargs="?",
+        default=ROOT / "circuit-firmware-3592.syx",
+        help="legitimate stock Circuit 1.8 build 3592 update SysEx",
+    )
+    args = parser.parse_args()
+
+    stock, messages, original = load(args.stock_sysex)
     base, _ = release.build_image(stock)
     if mod.sha256(base) != V042_IMAGE:
         raise SystemExit("v0.4.2 base does not match the verified image")
@@ -521,8 +770,9 @@ def main() -> None:
             "assumption is unverified"
         ),
         "record_ordering": (
-            "whether the stock automation handler runs before or after the hidden "
-            "wrapper is a runtime property"
+            "hardware established recorder-first ordering; the verifier covers "
+            "the matching Filter wrapper prediction but cannot reproduce the "
+            "device's event fan-out itself"
         ),
         "sample_descriptor_at_reload": (
             "the descriptor may not be populated during a pattern reload; the "

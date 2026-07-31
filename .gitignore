@@ -2,8 +2,9 @@
 __pycache__/
 *.py[cod]
 
-# Novation firmware and locally generated images must never be committed.
+# Ignore local firmware builds; the verified browser-uploader image is the only exception.
 *.syx
+!docs/firmware/circuit-3592-filter-lfo-shift-automation.syx
 *.bin
 *.circuitpack
 build/

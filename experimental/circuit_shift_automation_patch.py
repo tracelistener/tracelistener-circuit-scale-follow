@@ -10,7 +10,7 @@ values use 0x00..0x7f and 0xff means empty.  Factory-session analysis found no
 
     0x80 | sample_start      lane 1 (Decay), 0..126
     0x80 | distortion_type   lane 2 (Distortion), 0..6
-    0x80 | filter_lfo_mode   lane 3 (Filter), 0 or 12..15
+    0x80 | filter_lfo_mode   lane 3 (Filter), 0 or 12..19
 
 The stock recorder, timing grid, dirty flags, LED feedback, and erase path are
 left in charge.  One hook transforms the value just before the stock recorder
@@ -30,8 +30,6 @@ from pathlib import Path
 ANALYSIS_DIR = Path(__file__).resolve().parent
 PUBLISHED_TOOLS = (
     ANALYSIS_DIR.parent
-    / "github_publish"
-    / "tracelistener-circuit-scale-follow"
     / "tools"
 )
 sys.path.insert(0, str(ANALYSIS_DIR / "keystone_lib"))
@@ -53,6 +51,7 @@ DSP_SETTER = 0x0801633C
 DSP_GETTER = 0x08016E64
 PARAMETER_CONTEXT_POINTER = 0x20002DB0
 SHIFT_LOGICAL_ID = 0x1B
+CLEAR_LOGICAL_ID = 0x19
 
 SAMPLE_RAW_BASE = 0x1E59
 SAMPLE_DISPLACEMENT_BASE = 0x1E5D
@@ -100,27 +99,16 @@ SAMPLE_TAG_APPLY_END = 0x08036820
 SAMPLE_TAG_DECODER = 0x0803683C
 SAMPLE_TAG_DECODER_END = 0x0803684D
 
-# Unused padded tail of the verified Distortion wrapper.
-# Clear reset, ported from circuit_filter_lfo_patch on 2026-07-28.
-# CLEAR_HELD_ID: the logical->physical table at 0x0802EC88 holds 29 entries
-# (0..28) but the modifier-ID probe scanned only 0..27 (LOGICAL_BUTTON_COUNT =
-# 28), so ID 28 = 0x1C was never tested -- the single unscanned real button.
-# It maps to physical 0x07 = scan byte 0 bit 7.  Table decoding is confirmed by
-# index 27 = 0x0d = byte 1 bit 5 = Shift.  0x0F was a misread of the probe's
-# not-found sentinel (see memory) and is wrong; it boots and never fires.  This layer
-# reimplements the LFO application and had never carried the Clear feature at
-# all, so Clear was absent rather than broken.  0x0F is the hardware-measured
-# held-query ID (modifier-ID probe); the dispatcher's event numbering is a
-# different space and latching on it never fired.  The predicate lives in the
-# dead DISTORTION_TAG_HELPER block -- that helper is built and reserved but
-# never written and nothing branches to it, verified against the built image
-# (0 branches, 0 stored pointers into 0x08025D5C..0x08025D90).
-CLEAR_HELD_ID = 0x1C
-CLEAR_HELPER = 0x08036B08
-CLEAR_HELPER_END = 0x08036B28
-
-DISTORTION_TAG_HELPER = 0x08025D5C
-DISTORTION_TAG_HELPER_END = 0x08025D90
+# Hardware proves that the stock recorder observes a Shift+Filter encoder event
+# before the Filter wrapper updates its hidden mode.  Predict the wrapper's
+# result instead of recording the one-event-old DSP value.  These two pieces
+# occupy only already-proven slots: the unused NOP tail of the Distortion
+# wrapper and the former Clear-experiment slot.
+FILTER_RECORD_PREDICT_A = DISTORTION_TAG_HELPER = 0x08025D5C
+FILTER_RECORD_PREDICT_A_END = DISTORTION_TAG_HELPER_END = 0x08025D90
+FILTER_RECORD_PREDICT_B = 0x08036B08
+FILTER_RECORD_PREDICT_B_END = 0x08036B28
+ARM_RECORD_TAG = 0x080359E8
 
 RECORD_VALUE_HOOK = 0x0801CD6E
 RECORD_VALUE_STOCK = bytes.fromhex("02 F1 16 02")  # add.w r2,r2,#0x16
@@ -335,7 +323,7 @@ def build_clean_lfo_helpers() -> list[tuple[int, bytes, int, str]]:
             lsls r0, r0, #8
             mov r1, r3
             bl {DSP_SETTER:#x}
-            movs r0, #0
+            mov r0, r7
             pop {{r3, pc}}
         """,
         ARM_NORMAL_CENTER,
@@ -461,8 +449,7 @@ def build_clean_lfo_arm() -> tuple[list[tuple[int, bytes]], bytes]:
         gate = (
             "ldr r2, [sp, #4]\n"
             f"            bl {ARM_STEP_DIVIDER:#x}\n"
-            "            cmp r0, #0\n"
-            "            beq restore_amount\n"
+            "            cbz r0, restore_amount\n"
             "            "
         )
     else:
@@ -471,12 +458,10 @@ def build_clean_lfo_arm() -> tuple[list[tuple[int, bytes]], bytes]:
     common = assemble_thumb(
         f"""
             push {{r1, r2, r3, r4, r5, r6, r7, lr}}
-            mov r6, r2
-
-            movs r0, #{lfo.LFO_MODE_REGISTER_STRIDE}
-            muls r0, r6, r0
-            adds r0, #{lfo.LFO_MODE_REGISTERS[0]:#x}
-            mov r6, r0
+            movs r6, #{lfo.LFO_MODE_REGISTER_STRIDE}
+            muls r6, r2, r6
+            adds r6, #{lfo.LFO_MODE_REGISTERS[0]:#x}
+            mov r0, r6
             bl {DSP_GETTER:#x}
             lsrs r5, r0, #8
 
@@ -488,21 +473,29 @@ def build_clean_lfo_arm() -> tuple[list[tuple[int, bytes]], bytes]:
             movs r0, #0x10
             bl {STOCK_DRUM_CONTROL_GETTER:#x}
             mov r7, r0
-            lsls r0, r7, #24
-            bmi.w {ARM_FILTER_TAG_A:#x}
 
-            mov r0, r7
-            bl {CLEAR_HELPER:#x}
-
+            cmp r7, #0x40
+            bne normal_clear_done
+            movs r0, #{CLEAR_LOGICAL_ID:#x}
+            bl {STOCK_BUTTON_PRESSED:#x}
+            cbnz r0, normal_clear_done
+            movs r5, #0
+        normal_clear_done:
+            # Tagged automation is intercepted by PLAYBACK_DECODER before the
+            # stock dispatcher.  The live getter therefore returns only the
+            # normal 0..127 range here; the former downstream tag branch was
+            # both dead and vulnerable to Keystone's bad wide-conditional
+            # encoding.
             and r1, r5, #0x3f
+            cbz r1, normal_mode_valid
             cmp r1, #{lfo.LFO_MODE_MIN}
             blo normal_amount
             cmp r1, #{lfo.LFO_MODE_MAX}
             bhi normal_amount
+        normal_mode_valid:
             mov r0, r7
             mov r2, r6
             bl {ARM_NORMAL_CENTER:#x}
-            mov r0, r7
             b wrapper_return
 
         shift_event:
@@ -512,31 +505,34 @@ def build_clean_lfo_arm() -> tuple[list[tuple[int, bytes]], bytes]:
 
             cmp r7, r4
             beq restore_amount
-            {gate}cmp r7, r4
+            {gate}and r0, r5, #0x3f
+            cbz r0, shift_mode_valid
+            cmp r0, #{lfo.LFO_MODE_MIN}
+            blo shift_mode_off
+            cmp r0, #{lfo.LFO_MODE_MAX}
+            bls shift_mode_valid
+        shift_mode_off:
+            movs r0, #0
+        shift_mode_valid:
+            cmp r7, r4
             blo step_down
 
-            and r0, r5, #0x3f
-            cmp r0, #{lfo.LFO_MODE_MIN}
-            bhs step_up_valid
+            cbz r0, step_start
+            cmp r0, #{lfo.LFO_MODE_MAX}
+            bhs restore_amount
+            adds r0, #1
+            b pack_state
+        step_start:
             mov r0, r4
             movs r1, #{lfo.LFO_MODE_MIN}
             bl {ARM_CENTER_MAP:#x}
             b store_state
-        step_up_valid:
-            cmp r0, #{lfo.LFO_MODE_MAX}
-            bhs restore_amount
-            adds r0, #1
-            bic r1, r5, #0x3f
-            orrs r0, r1
-            b store_state
 
         step_down:
-            and r0, r5, #0x3f
             cmp r0, #{lfo.LFO_MODE_MIN}
             bls step_off
-            cmp r0, #{lfo.LFO_MODE_MAX}
-            bhi step_off
             subs r0, #1
+        pack_state:
             bic r1, r5, #0x3f
             orrs r0, r1
             b store_state
@@ -628,40 +624,84 @@ def build_sample_tag_helpers() -> list[tuple[int, bytes, int, str]]:
     return helpers
 
 
-def build_clear_helper() -> bytes:
-    """Hold Clear and move Macro 7/8 -> switch this drum's LFO off.
+def build_filter_record_predictors() -> list[tuple[int, bytes, int, str]]:
+    """Predict the post-wrapper Filter mode while the recorder runs first.
 
-    The value gate ("macro sits at its factory default") was ported from the
-    LFO module and is WRONG for this gesture: the Circuit's documented Clear
-    action is hold-Clear-and-move-the-control, so during the real gesture the
-    macro reads wherever it was moved to, never 64, and the gate never matched.
-    Firing on a live Clear read alone is the correct gesture.
-
-    Called with r0 = live macro value, r6 = this drum's mode register, r7 = the
-    same live value.  On a hit it drops its own saved lr and pops the wrapper's
-    frame directly, returning to the wrapper's caller with r0 = r7 -- that is
-    what keeps the call site down to the 6 bytes the cave had left.  r4-r7 are
-    callee-saved, so r6/r7 survive both calls below.
+    Part A validates the current packed mode, mirrors the verified three-event
+    divider without changing its counter, and converts the live Filter amount
+    to the wrapper's 0..127 comparison value.  Part B applies the exact
+    clockwise/counter-clockwise Off/12..19 transition and rejoins the recorder
+    at its fixed tag instruction.
     """
-    code = assemble_thumb(
+
+    part_a = assemble_thumb(
         f"""
-            push {{lr}}
-            movs r0, #{CLEAR_HELD_ID:#x}
-            bl {STOCK_BUTTON_PRESSED:#x}
-            cbz r0, clear_no
-            movs r0, #0
-            mov r1, r6
-            bl {DSP_SETTER:#x}
-            add sp, #4
-            mov r0, r7
-            pop {{r1, r2, r3, r4, r5, r6, r7, pc}}
-        clear_no:
-            pop {{pc}}
+            cbz r6, predict_mode_valid
+            cmp r6, #{lfo.LFO_MODE_MIN}
+            blo predict_mode_off
+            cmp r6, #{lfo.LFO_MODE_MAX}
+            bls predict_mode_valid
+        predict_mode_off:
+            movs r6, #0
+        predict_mode_valid:
+            movw r0, #{STEP_DIVIDER_STATE:#x}
+            adds r0, r0, r7
+            bl {DSP_GETTER:#x}
+            lsrs r0, r0, #8
+            adds r0, #1
+            cmp r0, #{STEP_DIVIDER_EVENTS}
+            bhs predict_event_passes
+            b.w {ARM_RECORD_TAG:#x}
+        predict_event_passes:
+            movw r0, #{FILTER_AMOUNT_BASE:#x}
+            adds r0, r0, r7
+            bl {DSP_GETTER:#x}
+            asrs r0, r0, #25
+            adds r0, #0x40
+            b.w {FILTER_RECORD_PREDICT_B:#x}
         """,
-        CLEAR_HELPER,
+        FILTER_RECORD_PREDICT_A,
     )
-    _check_slot(CLEAR_HELPER, code, CLEAR_HELPER_END, "Clear helper")
-    return code
+    part_b = assemble_thumb(
+        f"""
+            cmp r5, r0
+            beq predict_done
+            blo predict_down
+            cmp r6, #{lfo.LFO_MODE_MIN}
+            bhs predict_up_valid
+            movs r6, #{lfo.LFO_MODE_MIN - 1}
+        predict_up_valid:
+            cmp r6, #{lfo.LFO_MODE_MAX}
+            it lo
+            addlo r6, #1
+            b predict_done
+        predict_down:
+            cmp r6, #{lfo.LFO_MODE_MIN}
+            ite hi
+            subhi r6, #1
+            movls r6, #0
+        predict_done:
+            b.w {ARM_RECORD_TAG:#x}
+        """,
+        FILTER_RECORD_PREDICT_B,
+    )
+    helpers = [
+        (
+            FILTER_RECORD_PREDICT_A,
+            part_a,
+            FILTER_RECORD_PREDICT_A_END,
+            "Filter record prediction A",
+        ),
+        (
+            FILTER_RECORD_PREDICT_B,
+            part_b,
+            FILTER_RECORD_PREDICT_B_END,
+            "Filter record prediction B",
+        ),
+    ]
+    for address, code, end, purpose in helpers:
+        _check_slot(address, code, end, purpose)
+    return helpers
 
 
 def build_distortion_tag_helper() -> bytes:
@@ -787,19 +827,17 @@ def build_record_helper() -> bytes:
             b record_tag
 
         record_filter:
+            mov r5, r6
             movs r0, #{lfo.LFO_MODE_REGISTER_STRIDE}
             muls r0, r7, r0
             adds r0, #{lfo.LFO_MODE_REGISTERS[0]:#x}
             bl {DSP_GETTER:#x}
             lsrs r6, r0, #8
             and r6, r6, #0x3f
-            cbz r6, record_tag
-            cmp r6, #{lfo.LFO_MODE_MIN}
-            blo record_filter_off
-            cmp r6, #{lfo.LFO_MODE_MAX}
-            bls record_tag
-        record_filter_off:
-            movs r6, #0
+            b.w {FILTER_RECORD_PREDICT_A:#x}
+            nop
+            nop
+            nop
 
         record_tag:
             orr r6, r6, #{TAG_BIT:#x}
@@ -1016,10 +1054,6 @@ def clean_lfo_allowed_offsets() -> set[int]:
         allowed.update(range(image_offset(address), image_offset(address) + len(code)))
     for hook in lfo.FILTER_HOOKS:
         allowed.update(range(image_offset(hook.address), image_offset(hook.address) + 4))
-    helper = build_clear_helper()
-    allowed.update(
-        range(image_offset(CLEAR_HELPER), image_offset(CLEAR_HELPER) + len(helper))
-    )
     return allowed
 
 
@@ -1062,16 +1096,6 @@ def apply_clean_filter_lfo(base_image: bytes) -> tuple[bytes, dict]:
         image_offset(ARM_LFO_COMMON) : image_offset(ARM_LFO_COMMON) + len(common)
     ] = common
 
-    helper = build_clear_helper()
-    region = image[
-        image_offset(CLEAR_HELPER) : image_offset(CLEAR_HELPER) + len(helper)
-    ]
-    if any(region):
-        raise ValueError("Clear helper slot is not free")
-    image[
-        image_offset(CLEAR_HELPER) : image_offset(CLEAR_HELPER) + len(helper)
-    ] = helper
-
     patch_exact(
         image,
         lfo.DSP_HOOK_ADDRESS,
@@ -1095,7 +1119,11 @@ def apply_clean_filter_lfo(base_image: bytes) -> tuple[bytes, dict]:
     if unexpected:
         raise ValueError(f"clean Filter LFO changed undeclared offsets: {unexpected[:16]}")
     return bytes(image), {
-        "feature": "hardware-good Filter LFO reconstruction plus tag playback",
+        "feature": "Filter LFO reconstruction, active-low Clear reset, and tag playback",
+        "clear_reset": (
+            "Clear logical ID 0x19 is active-low; stock default value 64 "
+            "sets the selected drum LFO to Off"
+        ),
         "dsp_words": len(dsp_words),
         "dsp_labels": dsp_labels,
         "arm_common_bytes": len(common),
@@ -1104,13 +1132,8 @@ def apply_clean_filter_lfo(base_image: bytes) -> tuple[bytes, dict]:
 
 def automation_allowed_offsets() -> set[int]:
     allowed = set()
-    distortion = build_distortion_tag_helper()
-    allowed.update(
-        range(
-            image_offset(DISTORTION_TAG_HELPER),
-            image_offset(DISTORTION_TAG_HELPER) + len(distortion),
-        )
-    )
+    for address, code, _end, _purpose in build_filter_record_predictors():
+        allowed.update(range(image_offset(address), image_offset(address) + len(code)))
     recorder = build_record_helper()
     allowed.update(
         range(image_offset(ARM_RECORD_HELPER), image_offset(ARM_RECORD_HELPER) + len(recorder))
@@ -1156,6 +1179,7 @@ def apply_shift_automation(clean_lfo_image: bytes) -> tuple[bytes, dict]:
 
     image = bytearray(clean_lfo_image)
     record_helper = build_record_helper()
+    prediction_helpers = build_filter_record_predictors()
 
     record_region = image[
         image_offset(ARM_RECORD_HELPER) :
@@ -1167,6 +1191,18 @@ def apply_shift_automation(clean_lfo_image: bytes) -> tuple[bytes, dict]:
         image_offset(ARM_RECORD_HELPER) :
         image_offset(ARM_RECORD_HELPER) + len(record_helper)
     ] = record_helper
+
+    for address, code, _end, purpose in prediction_helpers:
+        region = image[image_offset(address) : image_offset(address) + len(code)]
+        if address == FILTER_RECORD_PREDICT_A:
+            if any(
+                region[index : index + 2] != b"\x00\xbf"
+                for index in range(0, len(region), 2)
+            ):
+                raise ValueError(f"{purpose} slot is not verified NOP padding")
+        elif any(region):
+            raise ValueError(f"{purpose} slot is not zero-filled")
+        image[image_offset(address) : image_offset(address) + len(code)] = code
 
     patch_exact(
         image,
@@ -1214,7 +1250,7 @@ def apply_shift_automation(clean_lfo_image: bytes) -> tuple[bytes, dict]:
         "lanes": {
             "1": "Sample Start 0..126",
             "2": "Distortion Type 0..6",
-            "3": "Filter LFO Off or 12..15",
+            "3": "Filter LFO Off or 12..19",
         },
         "record_helper_bytes": len(record_helper),
         "filter_wrapper_bytes": len(build_clean_lfo_arm()[1]),

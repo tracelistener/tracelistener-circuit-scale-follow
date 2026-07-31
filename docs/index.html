@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Circuit Firmware Uploader</title>
+<title>Circuit Scale Follow Uploader</title>
 <style>
   :root {
     --bg: #12131a; --panel: #1b1d27; --line: #2c2f3d;
@@ -33,7 +33,7 @@
   }
   button:disabled { background: #39404f; color: #7d8595; cursor: not-allowed; }
   button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
-  select, input[type=file] { font: inherit; color: var(--ink); background: #12141c;
+  select { font: inherit; color: var(--ink); background: #12141c;
     border: 1px solid var(--line); border-radius: 8px; padding: .55rem .6rem; width: 100%; }
   .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
   code, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .85em; }
@@ -43,22 +43,24 @@
   #status { min-height: 1.6em; }
   .ok { color: var(--go); } .warn { color: var(--warn); } .bad { color: var(--bad); }
   .note { color: var(--dim); font-size: .9rem; }
+  a { color: var(--accent); }
   ul { margin: .4rem 0 0; padding-left: 1.1rem; } li { margin: .2rem 0; }
   .danger { border-color: #5a2a2a; background: #24181b; }
 </style>
 </head>
 <body>
 <main>
-  <h1>Circuit Firmware Uploader</h1>
-  <p class="sub">Runs in your browser. Nothing to install.</p>
+  <h1>Circuit Scale Follow</h1>
+  <p class="sub">Hardware-validated firmware uploader. Nothing to install.</p>
 
   <div class="step danger">
     <h2>Before you start</h2>
     <ul>
-      <li><strong>Close Novation Components</strong> and any music software. Windows will not let two programs use the Circuit at once — this is the most common cause of failure.</li>
-      <li>Connect the Circuit by USB directly to the computer, not through a hub.</li>
-      <li>Put it in <strong>bootloader mode</strong>: turn it off, then hold <strong>Scales + Note + Velocity</strong> while turning it on.</li>
-      <li>Use <strong>Chrome</strong> or <strong>Edge</strong>. Firefox and Safari cannot send firmware.</li>
+      <li>Back up your Circuit pack in Novation Components.</li>
+      <li>Close Components, DAWs, and other MIDI software.</li>
+      <li>Connect the original Circuit directly by USB.</li>
+      <li>Power on while holding <strong>Scales + Note + Velocity</strong>.</li>
+      <li>Use <strong>Chrome</strong> or <strong>Edge</strong>.</li>
     </ul>
   </div>
 
@@ -76,15 +78,15 @@
     <p class="note" id="portHint">Look for a name containing “Bootloader”.</p>
   </div>
 
-  <div class="step" id="s3" aria-disabled="true">
-    <h2>Step 3 — Choose the firmware file</h2>
-    <input type="file" id="file" accept=".syx">
-    <p class="note" id="fileInfo">Select a <code>.syx</code> firmware file.</p>
+  <div class="step" id="s3">
+    <h2>Verified firmware</h2>
+    <p class="note" id="fileInfo">Loading firmware…</p>
     <p class="note hash mono" id="fileHash"></p>
+    <p class="note"><a href="firmware/circuit-3592-filter-lfo-shift-automation.syx" download>Download a copy</a></p>
   </div>
 
   <div class="step" id="s4" aria-disabled="true">
-    <h2>Step 4 — Upload</h2>
+    <h2>Step 3 — Upload</h2>
     <div class="row">
       <button id="send">Start upload</button>
       <button id="cancel" class="ghost" disabled>Cancel</button>
@@ -100,12 +102,25 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const state = { access: null, output: null, messages: null, cancel: false };
+  const firmwareUrl = "firmware/circuit-3592-filter-lfo-shift-automation.syx";
+  const firmwareHash = "7ea9affe4c5310a8c3d84abf6c05b1ee35d4ef9ee6d30bb040711a4eb047745f";
 
   const enable = (el, on) => el.setAttribute("aria-disabled", on ? "false" : "true");
   const say = (msg, cls = "") => { $("status").className = "note " + cls; $("status").textContent = msg; };
 
-  if (!navigator.requestMIDIAccess) {
+  const isFirefox = /firefox|fxios/i.test(navigator.userAgent);
+  const isSafari = /^((?!chrome|android|crios|edg).)*safari/i.test(navigator.userAgent);
+  if (isFirefox) {
+    $("midiStatus").innerHTML = '<span class="bad">Use Chrome or Edge.</span>';
+    $("connect").disabled = true;
+  } else if (isSafari) {
+    $("midiStatus").innerHTML = '<span class="bad">Use Chrome or Edge.</span>';
+    $("connect").disabled = true;
+  } else if (!navigator.requestMIDIAccess) {
     $("midiStatus").innerHTML = '<span class="bad">This browser cannot send MIDI. Please use Chrome or Edge.</span>';
+    $("connect").disabled = true;
+  } else if (!window.isSecureContext) {
+    $("midiStatus").innerHTML = '<span class="bad">This page must be opened over https to send MIDI.</span>';
     $("connect").disabled = true;
   }
 
@@ -149,26 +164,29 @@
   $("ports").onchange = pick;
   function pick() {
     state.output = state.access.outputs.get($("ports").value) || null;
-    enable($("s3"), !!state.output);
     checkReady();
   }
 
-  $("file").onchange = async () => {
-    const f = $("file").files[0];
-    if (!f) return;
-    const buf = new Uint8Array(await f.arrayBuffer());
-    const msgs = split(buf);
-    if (!msgs.length) {
-      $("fileInfo").innerHTML = '<span class="bad">That file contains no MIDI firmware data.</span>';
-      state.messages = null; checkReady(); return;
+  async function loadFirmware() {
+    try {
+      const response = await fetch(firmwareUrl, { cache: "no-store" });
+      if (!response.ok) throw new Error("download failed");
+      const buf = new Uint8Array(await response.arrayBuffer());
+      const digest = await crypto.subtle.digest("SHA-256", buf);
+      const hash = [...new Uint8Array(digest)]
+        .map(b => b.toString(16).padStart(2, "0")).join("");
+      if (hash !== firmwareHash) throw new Error("hash mismatch");
+      const messages = split(buf);
+      if (messages.length !== 5981) throw new Error("message count mismatch");
+      state.messages = messages;
+      $("fileInfo").innerHTML = '<span class="ok">Firmware ready — 5,981 messages.</span>';
+      $("fileHash").textContent = "SHA-256 " + hash;
+      checkReady();
+    } catch (err) {
+      $("fileInfo").innerHTML = '<span class="bad">Firmware could not be verified. Reload the page.</span>';
+      $("fileHash").textContent = String(err && err.message || err);
     }
-    state.messages = msgs;
-    $("fileInfo").innerHTML = '<span class="ok">' + f.name + ' — ' + msgs.length.toLocaleString() + ' messages.</span>';
-    const digest = await crypto.subtle.digest("SHA-256", buf);
-    $("fileHash").textContent = "SHA-256 " + [...new Uint8Array(digest)]
-      .map(b => b.toString(16).padStart(2, "0")).join("");
-    checkReady();
-  };
+  }
 
   function split(bytes) {
     const out = []; let start = -1;
@@ -190,7 +208,7 @@
     if (!confirm("Upload firmware to “" + state.output.name + "”?\n\nDo not unplug anything until it finishes.")) return;
 
     state.cancel = false;
-    $("send").disabled = true; $("cancel").disabled = false; $("file").disabled = true;
+    $("send").disabled = true; $("cancel").disabled = false;
     const total = state.messages.length;
 
     try {
@@ -215,9 +233,11 @@
         say("Failed: the Circuit disconnected. Check the cable, re-enter bootloader mode, and try again.", "bad");
       }
     } finally {
-      $("send").disabled = false; $("cancel").disabled = true; $("file").disabled = false;
+      $("send").disabled = false; $("cancel").disabled = true;
     }
   };
+
+  loadFirmware();
 })();
 </script>
 </body>
