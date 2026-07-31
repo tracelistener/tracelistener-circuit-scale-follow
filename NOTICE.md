@@ -2,7 +2,7 @@
 
 Circuit Scale Follow is an independent community firmware-patching project for the original Novation Circuit.
 
-Novation firmware, factory content, manuals, and other copyrighted Novation material are not distributed by this repository. Users must provide their own legitimate copy of the exact supported stock firmware. The build tool verifies that input by SHA-256 and writes all generated firmware files only on the user's computer.
+The browser uploader includes one prebuilt patched firmware update for owners of the supported original Circuit. Novation firmware remains third-party material and is not covered by this project's MIT license. The source builders still require a user-supplied legitimate stock update and verify it by SHA-256.
 
 The MIT license applies only to the original source code and documentation in this repository. It does not grant rights to Novation firmware or other third-party material.
 

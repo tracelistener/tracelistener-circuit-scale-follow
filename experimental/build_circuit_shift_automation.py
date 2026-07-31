@@ -1,12 +1,12 @@
-"""Build the hardware-test SysEx for tagged Shift automation.
+"""Build the hardware-validated SysEx for tagged Shift automation.
 
-    python analysis\\build_circuit_shift_automation.py
+    python experimental\\build_circuit_shift_automation.py circuit-firmware-3592.syx
 
 Layers, in order, on the verified v0.4.2 base:
-  1. the clean Filter LFO reconstruction (no Clear/reset overlay)
+  1. the Filter LFO reconstruction with active-low stock Clear reset
   2. tagged Shift automation record and playback
 
-Run analysis\\verify_circuit_shift_automation.py first; this script refuses to
+Run experimental\\verify_circuit_shift_automation.py first; this script refuses to
 write anything if the staged hashes do not match what the verifier saw.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 ANALYSIS_DIR = Path(__file__).resolve().parent
 ROOT = ANALYSIS_DIR.parent
-PUBLISHED_TOOLS = ROOT / "github_publish" / "tracelistener-circuit-scale-follow" / "tools"
+PUBLISHED_TOOLS = ROOT / "tools"
 
 sys.path.insert(0, str(ANALYSIS_DIR / "keystone_lib"))
 sys.path.insert(0, str(ANALYSIS_DIR))
@@ -38,8 +38,7 @@ def main() -> None:
     parser.add_argument(
         "stock_sysex",
         type=Path,
-        nargs="?",
-        default=Path(r"C:\Users\admin\AI-Projects\circuit-firmware-3592.syx"),
+        help="legitimate stock Circuit 1.8 build 3592 update SysEx",
     )
     parser.add_argument(
         "--output-dir", type=Path, default=ROOT / "build" / "circuit-shift-automation"
@@ -74,7 +73,19 @@ def main() -> None:
     (args.output_dir / f"{stem}-manifest.json").write_text(
         json.dumps(
             {
-                "status": "hardware test candidate, NOT published",
+                "status": "hardware validated 2026-07-31, NOT published",
+                "hardware_validation": {
+                    "boot": "normal",
+                    "filter_shift_automation": (
+                        "recorded LFO state replays without a knob nudge"
+                    ),
+                    "clear_clockwise": (
+                        "blue stock reset disables the selected drum LFO"
+                    ),
+                    "clear_counter_clockwise": (
+                        "red stock automation erase leaves the LFO active"
+                    ),
+                },
                 "base_image_sha256": mod.sha256(base),
                 "clean_lfo_image_sha256": mod.sha256(lfo_image),
                 "patched_image_sha256": mod.sha256(patched),
