@@ -5,7 +5,7 @@
 - Add the per-drum Filter LFO with four triangle and four sawtooth speeds.
 - Record and replay hidden Shift controls through the stock drum automation lanes.
 - Remove the one-event Filter-LFO recording lag and playback knob-nudge requirement.
-- Make the stock Clear + Macro clockwise gesture disable the selected drum's Filter LFO while retaining its blue LED.
+- Make the stock Clear + Macro clockwise gesture reset Scale Follow, Sample Start, Distortion Type, or Filter LFO for the selected drum while retaining its blue LED.
 - Preserve Clear + Macro counter-clockwise automation deletion and its red LED.
 - Replace the public install paths with one browser uploader that loads and verifies the hardware-tested firmware automatically.
 

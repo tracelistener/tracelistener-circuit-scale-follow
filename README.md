@@ -24,7 +24,7 @@ Use Chrome or Edge. The page loads and verifies the firmware automatically—no 
 | Shift + Macro 5/6 | Select one of seven stock distortion algorithms for the first/second drum. |
 | Shift + Macro 7/8 | Select Filter LFO Off or eight speeds: four triangle and four sawtooth. |
 | Record + Shift Macro | Record and replay Sample Start, Distortion Type, and Filter LFO movements. |
-| Clear + Macro 7/8 clockwise | Perform the stock blue-LED reset and switch that drum's Filter LFO Off. |
+| Clear + Macro 1–8 clockwise | Perform the stock blue-LED reset and reset the corresponding new control: Scale Follow, Sample Start, Distortion Type, or Filter LFO. |
 | Clear + Macro counter-clockwise | Keep the stock red-LED automation-delete behavior. |
 
 Normal Macro movement retains the Circuit's stock Decay, Distortion Amount, and bipolar Filter controls.
@@ -39,7 +39,7 @@ SHA-256:
 7ea9affe4c5310a8c3d84abf6c05b1ee35d4ef9ee6d30bb040711a4eb047745f
 ```
 
-Validated on hardware on 2026-07-31: normal boot, all four drum paths, Scale Follow, Sample Start, independent Distortion Type, Filter LFO, Shift automation playback without a knob nudge, blue-LED Clear reset, and red-LED automation deletion.
+Validated on hardware on 2026-07-31: normal boot, all four drum paths, Scale Follow, Sample Start, independent Distortion Type, Filter LFO, Shift automation playback without a knob nudge, blue-LED Clear resets for every new control, and red-LED automation deletion.
 
 ## Compatibility and recovery
 
